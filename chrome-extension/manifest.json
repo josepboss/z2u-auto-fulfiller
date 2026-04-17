@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Z2U Auto Fulfiller",
+  "version": "1.0.0",
+  "description": "Automatically monitors Z2U new orders and fulfills them via Lfollowers backend.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "downloads",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://z2u.com/*",
+    "http://localhost:*/*",
+    "https://*/"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://z2u.com/sellOrder/index*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Z2U Auto Fulfiller"
+  }
+}

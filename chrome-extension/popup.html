@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Z2U Auto Fulfiller</title>
+  <style>
+    body {
+      width: 320px;
+      font-family: system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      margin: 0;
+      padding: 1rem;
+    }
+    h1 { font-size: 1rem; font-weight: 700; margin-bottom: .25rem; }
+    .sub { font-size: .75rem; color: #94a3b8; margin-bottom: 1rem; }
+    label { display: block; font-size: .75rem; color: #94a3b8; margin-top: .75rem; margin-bottom: .25rem; }
+    input {
+      width: 100%;
+      padding: .4rem .6rem;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: .375rem;
+      color: #e2e8f0;
+      font-size: .8rem;
+      box-sizing: border-box;
+    }
+    button {
+      width: 100%;
+      margin-top: .75rem;
+      padding: .45rem;
+      background: #6366f1;
+      color: #fff;
+      border: none;
+      border-radius: .375rem;
+      cursor: pointer;
+      font-size: .85rem;
+      font-weight: 500;
+    }
+    button:hover { background: #4f46e5; }
+    .status {
+      margin-top: .75rem;
+      padding: .4rem .6rem;
+      border-radius: .375rem;
+      font-size: .75rem;
+      background: #1e293b;
+      color: #94a3b8;
+    }
+    a { color: #818cf8; font-size: .75rem; text-decoration: none; display: block; margin-top: .5rem; }
+    a:hover { text-decoration: underline; }
+    #msg { font-size: .75rem; margin-top: .5rem; color: #6ee7b7; min-height: 1em; }
+  </style>
+</head>
+<body>
+  <h1>Z2U Auto Fulfiller</h1>
+  <p class="sub">Automated order processing for Z2U via Lfollowers</p>
+
+  <label>Backend Server URL</label>
+  <input type="text" id="serverUrl" placeholder="http://localhost:3000" />
+
+  <button id="saveBtn">Save Settings</button>
+  <div id="msg"></div>
+
+  <div class="status" id="statusBox">Loading...</div>
+  <a id="adminLink" href="#" target="_blank">Open Admin Dashboard ↗</a>
+
+  <script src="popup.js"></script>
+</body>
+</html>
