@@ -125,46 +125,47 @@
     }
     console.log("[Z2U] Mappings:", Object.keys(mappings));
 
-    // Each order in the table is TWO <tr>s:
-    //   Row A (info):  order number, buyer, date
-    //   Row B (data):  product | price | type | status | remarks | total
-    // We look for data rows whose status cell contains "NEW ORDER".
-    const allRows = Array.from(document.querySelectorAll("table tbody tr"));
-    console.log(`[Z2U] Found ${allRows.length} table rows.`);
+    // Z2U renders each order as a .orderPanel div (NOT table rows).
+    // Structure:
+    //   .orderPanel
+    //     .panelHead
+    //       .o-number  → contains <a>Z1144625572</a> and <span class="neworder">
+    //     .panelBody
+    //       .o-l-col.productInfo  → <a>Product Title</a>
+    //       .o-l-col.productStatus → <div class="smLabel dangerLabel">NEW ORDER</div>
+    //                                <a href="/sellOrder?order_id=...">Order Detail</a>
+    const panels = document.querySelectorAll(".orderPanel");
+    console.log(`[Z2U] Found ${panels.length} .orderPanel(s).`);
 
-    for (let i = 0; i < allRows.length; i++) {
-      const row = allRows[i];
-      const rowText = row.textContent || "";
+    for (const panel of panels) {
+      // Only process panels with a "NEW ORDER" status badge
+      const statusBadge = panel.querySelector(".smLabel.dangerLabel");
+      if (!statusBadge || !statusBadge.textContent.trim().toUpperCase().includes("NEW ORDER")) continue;
 
-      // Skip header or info rows — data rows contain a price (USD)
-      if (!rowText.includes("NEW ORDER")) continue;
+      // Order ID: from the clipboard data attribute (most reliable) or link text
+      const copyBtn = panel.querySelector("[data-clipboard-text]");
+      const orderIdFromClipboard = copyBtn?.getAttribute("data-clipboard-text")?.trim();
+      const orderIdFromLink = panel.querySelector(".o-number a")?.textContent?.trim();
+      const orderId = orderIdFromClipboard || orderIdFromLink;
 
-      // Extract orderId from this row OR the preceding sibling (info row)
-      let orderId = null;
-      const infoRow = allRows[i - 1] || null;
-      for (const src of [row, infoRow].filter(Boolean)) {
-        const m = (src.textContent || "").match(/Order\s*(?:number|num)[：:]\s*([A-Z0-9]+)/i);
-        if (m) { orderId = m[1].trim(); break; }
-      }
+      // Product title: the anchor inside .productInfo
+      const titleEl = panel.querySelector(".o-l-col.productInfo a");
+      const title = titleEl?.textContent?.trim() || "";
 
-      // Extract product title — first <td>, strip sub-elements if possible
-      let title = "";
-      const firstTd = row.querySelector("td:nth-child(1)");
-      if (firstTd) {
-        // Try to grab a named element first
-        const named = firstTd.querySelector('[class*="title"],[class*="name"],[class*="product"]');
-        title = named?.textContent?.trim() || firstTd.textContent?.trim() || "";
-      }
+      // Order detail link: anchor inside .productStatus pointing to /sellOrder
+      const detailLink = panel.querySelector('.o-l-col.productStatus a[href*="sellOrder"]');
+      const detailHref = detailLink?.getAttribute("href");
 
-      console.log(`[Z2U] 🔍 NEW ORDER row | orderId="${orderId}" | title="${title.slice(0,60)}..."`);
+      console.log(`[Z2U] 🔍 NEW ORDER panel | orderId="${orderId}" | title="${title.slice(0, 60)}..." | detailHref="${detailHref}"`);
 
       if (!orderId) {
-        console.warn("[Z2U] ⚠️ Could not extract orderId — skipping.");
+        console.warn("[Z2U] ⚠️ Could not extract orderId — skipping panel.");
         continue;
       }
 
       if (!mappings[title]) {
-        console.log(`[Z2U] ℹ️ No mapping for title. Available: ${JSON.stringify(Object.keys(mappings))}`);
+        console.log(`[Z2U] ℹ️ No mapping for: "${title}"`);
+        console.log("[Z2U] ℹ️ Available mappings:", Object.keys(mappings));
         continue;
       }
 
@@ -174,32 +175,19 @@
         continue;
       }
 
-      // Navigate to the order detail page
-      // The "Order Detail" link is in the status cell
-      const detailLink =
-        row.querySelector('a[href*="sellOrder"]') ||
-        Array.from(row.querySelectorAll("a")).find(
-          (a) => a.textContent?.trim().toLowerCase().includes("order detail")
-        );
-
-      if (detailLink) {
-        const detailHref = detailLink.getAttribute("href");
-        console.log(`[Z2U] 🔗 Navigating to detail: ${detailHref}`);
-        // Save the pending orderId so the detail page can pick it up
-        await chrome.storage.local.set({ pendingOrderId: orderId, pendingTitle: title });
-        window.location.href = detailHref;
-        return; // navigation in progress — stop scanning
-      } else {
-        // Try building the URL from the order ID
-        const detailUrl = `https://www.z2u.com/sellOrder?order_id=${orderId}`;
-        console.log(`[Z2U] 🔗 No link found, navigating to: ${detailUrl}`);
-        await chrome.storage.local.set({ pendingOrderId: orderId, pendingTitle: title });
-        window.location.href = detailUrl;
-        return;
+      if (!detailHref) {
+        console.warn(`[Z2U] ⚠️ No detail link found for order ${orderId}.`);
+        continue;
       }
+
+      // Save context for the detail page to pick up
+      await chrome.storage.local.set({ pendingOrderId: orderId, pendingTitle: title });
+      console.log(`[Z2U] 🔗 Navigating to detail: ${detailHref}`);
+      window.location.href = detailHref;
+      return; // navigation in progress — stop scanning
     }
 
-    console.log("[Z2U] ✅ List scan complete. No unprocessed NEW ORDER rows found.");
+    console.log("[Z2U] ✅ List scan complete. No unprocessed NEW ORDER panels found.");
   }
 
   // ══════════════════════════════════════════════════════════════════════════
