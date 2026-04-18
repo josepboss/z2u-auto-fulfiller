@@ -1,0 +1,73 @@
+[Z2U][11:14:06.387] INIT ▶ Running on DETAIL page.
+content.js:15 [Z2U][11:14:09.356] DETAIL 📄 Page loaded | orderId="Z5252643865"
+content.js:15 [Z2U][11:14:09.356] DETAIL Waiting 1s for page to fully render…
+content.js:15 [Z2U][11:14:10.360] DETAIL [1] Status → NEW ORDER:true | PREPARING:true | DELIVERING:true | badge:"not found"
+content.js:15 [Z2U][11:14:10.368] DETAIL [2A] Found "Product Title" label → raw: ": ⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domain" → cleaned: "⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains�"
+content.js:15 [Z2U][11:14:10.369] DETAIL [2] Final title: "⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"
+content.js:15 [Z2U][11:14:12.916] DETAIL [3] Mappings available: ["⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"]
+content.js:15 [Z2U][11:14:12.916] DETAIL [3] ✅ Mapping found → productId="1-00d7438d-d8d3-4a0b-b5a6-8c96d1d4cf35"
+content.js:15 [Z2U][11:14:12.924] DETAIL [4] bgIsProcessed → false
+content.js:15 [Z2U][11:14:12.950] DETAIL [5] Found QUANTITY label → next element text: "32" → parsed: 32
+content.js:15 [Z2U][11:14:12.950] DETAIL [5] Using quantity: 32
+content.js:15 [Z2U][11:14:12.950] DETAIL 🚀 Starting fulfillment | orderId=Z5252643865 | qty=32
+content.js:15 [Z2U][11:14:12.951] DETAIL-BEFORE-PREPARING Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "EN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "Upload/View", "Download Bulk Delivery Form Template", "Upload Form", "Confirm Delivered", "Confirm Delivered", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
+content.js:15 [Z2U][11:14:12.961] DETAIL [6] Template link found by: text="Download Bulk Delivery Form Template" href="https://www.z2u.com/downloadFormTemp/order_id/Z5252643865"
+content.js:15 [Z2U][11:14:12.961] DETAIL [6] Page state → hasTemplateLink:true | hasStartTrading:false | hasPrepBtn:false
+content.js:15 [Z2U][11:14:12.964] DETAIL-STATE-CHECK Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "EN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "Upload/View", "Download Bulk Delivery Form Template", "Upload Form", "Confirm Delivered", "Confirm Delivered", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
+content.js:15 [Z2U][11:14:12.965] DETAIL [6-8] Template link already on page — order is in Delivering state. Jumping to download.
+content.js:15 [Z2U][11:14:12.965] DETAIL [9] Looking for template download link…
+content.js:15 [Z2U][11:14:12.968] DETAIL [9] Template link: text="Download Bulk Delivery Form Template" href="https://www.z2u.com/downloadFormTemp/order_id/Z5252643865"
+content.js:15 [Z2U][11:14:12.968] DL Downloading template from: https://www.z2u.com/downloadFormTemp/order_id/Z5252643865
+content.js:15 [Z2U][11:14:13.255] DL Download response: HTTP 200
+content.js:15 [Z2U][11:14:13.269] DL Downloaded 7055 bytes
+content.js:15 [Z2U][11:14:13.270] DETAIL [10] Sending to backend…
+content.js:15 [Z2U][11:14:13.270] BACKEND Sending to backend → orderId=Z5252643865 title="⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accoun..." qty=32 blobSize=7055
+content.js:13 [Z2U][11:14:20.516] BACKEND Backend response → {ok: true, result: {…}}
+content.js:15 [Z2U][11:14:20.517] DETAIL [10] ✅ Backend success. Filled file size: 7904 bytes
+content.js:15 [Z2U][11:14:20.517] DETAIL [11] Uploading filled file…
+content.js:15 [Z2U][11:14:21.023] UPLOAD [B] Scanning for xlsx file input before clicking Upload Form…
+content.js:15 [Z2U][11:14:21.024] UPLOAD [B] All file inputs on page: accept="" name="order_before_img" id="filepond--browser-hw0qef1m4" | accept="" name="order_after_img" id="filepond--browser-tv3yzxi9v" | accept="" name="upload" id="upfile"
+content.js:15 [Z2U][11:14:21.025] UPLOAD [B] Using input: accept="" id="filepond--browser-hw0qef1m4" name="order_before_img"
+content.js:15 [Z2U][11:14:21.025] UPLOAD [B] Injected via native files setter.
+content.js:15 [Z2U][11:14:21.029] UPLOAD [B] File injected (7904 bytes). Waiting 3s for Z2U to process…
+content.js:15 [Z2U][11:14:24.532] UPLOAD-BEFORE-CONFIRM Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "EN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "Upload/View", "Download Bulk Delivery Form Template", "Upload Form", "Confirm Delivered", "Confirm Delivered", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
+content.js:15 [Z2U][11:14:24.532] UPLOAD [D] Looking for Confirm Delivered button…
+content.js:15 [Z2U][11:14:24.534] UPLOAD [D] Clicking Confirm Delivered: "Confirm Delivered"
+content.js:15 [Z2U][11:14:27.556] UPLOAD [E] Confirm Delivered still visible — looking for modal confirm button…
+content.js:15 [Z2U][11:14:27.556] UPLOAD [E] Clicking modal confirm: "Confirm"
+content.js:19 [Z2U] UPLOAD ⚠️  [E] Z2U error on page: "If you like it, click on the "Ctrl+D" to bookmark this website
+                No more prompts"
+warn @ content.js:19
+uploadAndConfirm @ content.js:231
+await in uploadAndConfirm
+runDetailPage @ content.js:606
+setTimeout
+init @ content.js:634
+(anonymous) @ content.js:643
+(anonymous) @ content.js:645Understand this warning
+content.js:19 [Z2U] UPLOAD ⚠️  [E] Could not confirm delivery. Check Z2U page manually.
+warn @ content.js:19
+uploadAndConfirm @ content.js:232
+await in uploadAndConfirm
+runDetailPage @ content.js:606
+setTimeout
+init @ content.js:634
+(anonymous) @ content.js:643
+(anonymous) @ content.js:645Understand this warning
+content.js:19 [Z2U] DETAIL ⚠️  [11] Upload/confirm step did not complete.
+warn @ content.js:19
+runDetailPage @ content.js:611
+setTimeout
+init @ content.js:634
+(anonymous) @ content.js:643
+(anonymous) @ content.js:645Understand this warning
+content.js:15 [Z2U][11:14:29.572] DETAIL ↩ Returning to order list in 3s to process next order…
