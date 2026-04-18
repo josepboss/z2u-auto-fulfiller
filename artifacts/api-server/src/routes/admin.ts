@@ -7,6 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const MAPPINGS_FILE = path.resolve(__dirname, "../../mappings.json");
+const CACHE_DIR     = path.resolve(__dirname, "../../order-cache");
 
 function loadMappings(): Record<string, string> {
   if (!fs.existsSync(MAPPINGS_FILE)) return {};
@@ -15,6 +16,18 @@ function loadMappings(): Record<string, string> {
 
 function saveMappings(data: Record<string, string>) {
   fs.writeFileSync(MAPPINGS_FILE, JSON.stringify(data, null, 2));
+}
+
+function listCachedOrders(): { orderId: string; bytes: number; mtime: string }[] {
+  if (!fs.existsSync(CACHE_DIR)) return [];
+  return fs
+    .readdirSync(CACHE_DIR)
+    .filter((f) => f.endsWith(".xlsx"))
+    .map((f) => {
+      const stat = fs.statSync(path.join(CACHE_DIR, f));
+      return { orderId: f.replace(".xlsx", ""), bytes: stat.size, mtime: stat.mtime.toISOString() };
+    })
+    .sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
 const router = Router();
@@ -39,11 +52,14 @@ const html = `<!DOCTYPE html>
   button:hover{background:#4f46e5}
   button.danger{background:#ef4444}
   button.danger:hover{background:#dc2626}
+  button.dl{background:#0369a1;margin-top:0}
+  button.dl:hover{background:#0284c7}
   table{width:100%;border-collapse:collapse;font-size:.85rem}
   th{text-align:left;padding:.5rem .75rem;background:#0f172a;color:#94a3b8;font-weight:500;border-bottom:1px solid #334155}
   td{padding:.5rem .75rem;border-bottom:1px solid #1e293b;vertical-align:middle}
   tr:hover td{background:#0f172a}
   .tag{display:inline-block;padding:.15rem .5rem;border-radius:.25rem;font-size:.75rem;background:#312e81;color:#a5b4fc}
+  .badge{display:inline-block;padding:.15rem .5rem;border-radius:.25rem;font-size:.75rem;background:#064e3b;color:#6ee7b7}
   #msg{padding:.5rem 1rem;border-radius:.375rem;margin-bottom:1rem;font-size:.875rem;display:none}
   .ok{background:#064e3b;color:#6ee7b7}
   .err{background:#7f1d1d;color:#fca5a5}
@@ -73,6 +89,16 @@ const html = `<!DOCTYPE html>
   </table>
 </div>
 
+<div class="card">
+  <h2>Processed Orders <span id="orderCount" style="color:#64748b;font-weight:400;font-size:.8rem"></span></h2>
+  <p style="color:#64748b;font-size:.8rem;margin-bottom:1rem">Filled XLSX files cached on the server. Each order is processed only once — retries serve the cached file.</p>
+  <table>
+    <thead><tr><th>Order ID</th><th>Size</th><th>Processed At</th><th>Download</th></tr></thead>
+    <tbody id="ordersBody"><tr><td colspan="4" style="color:#64748b">Loading...</td></tr></tbody>
+  </table>
+  <button class="danger" style="margin-top:1rem" onclick="clearAllOrders()">Clear All Cached Orders</button>
+</div>
+
 <script>
 function showMsg(text, ok) {
   const el = document.getElementById('msg');
@@ -92,7 +118,7 @@ async function loadServices() {
       data.data.forEach(s => {
         const o = document.createElement('option');
         o.value = s.product_id;
-        o.textContent = \`[\${s.product_id}] \${s.name} | Stock: \${s.quantity} | $\${s.price}\`;
+        o.textContent = \`[\${s.product_id}] \${s.name} | Stock: \${s.quantity} | \$\${s.price}\`;
         sel.appendChild(o);
       });
     }
@@ -117,6 +143,30 @@ async function loadMappings() {
   \`).join('');
 }
 
+async function loadOrders() {
+  try {
+    const res = await fetch('/api/admin/cached-orders');
+    const data = await res.json();
+    const tbody = document.getElementById('ordersBody');
+    const count = document.getElementById('orderCount');
+    count.textContent = \`(\${data.length} orders)\`;
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b">No processed orders yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(o => {
+      const kb = (o.bytes / 1024).toFixed(1);
+      const dt = new Date(o.mtime).toLocaleString();
+      return \`<tr>
+        <td><span class="badge">\${o.orderId}</span></td>
+        <td>\${kb} KB</td>
+        <td>\${dt}</td>
+        <td><button class="dl" onclick="downloadOrder('\${o.orderId}')">⬇ Download</button></td>
+      </tr>\`;
+    }).join('');
+  } catch(e) { console.error(e); }
+}
+
 async function addMapping() {
   const title = document.getElementById('title').value.trim();
   const selVal = document.getElementById('serviceSelect').value;
@@ -138,12 +188,24 @@ async function deleteMapping(encodedTitle) {
   else showMsg('Failed to delete.', false);
 }
 
+function downloadOrder(orderId) {
+  window.location.href = '/api/admin/cached-orders/' + orderId + '/download';
+}
+
+async function clearAllOrders() {
+  if (!confirm('Clear all cached orders? The next retry for each order will call the Lfollowers API again.')) return;
+  const res = await fetch('/api/order-cache', { method: 'DELETE' });
+  if (res.ok) { showMsg('All cached orders cleared.', true); loadOrders(); }
+  else showMsg('Failed to clear orders.', false);
+}
+
 document.getElementById('serviceSelect').addEventListener('change', function() {
   if (this.value) document.getElementById('serviceId').value = this.value;
 });
 
 loadServices();
 loadMappings();
+loadOrders();
 </script>
 </body>
 </html>`;
@@ -175,6 +237,22 @@ router.delete("/admin/mappings/:title", (req, res) => {
   delete mappings[title];
   saveMappings(mappings);
   res.json({ ok: true });
+});
+
+router.get("/admin/cached-orders", (_req, res) => {
+  res.json(listCachedOrders());
+});
+
+router.get("/admin/cached-orders/:orderId/download", (req, res) => {
+  const safe = req.params.orderId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const filePath = path.join(CACHE_DIR, `${safe}.xlsx`);
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ error: "Order not in cache" });
+    return;
+  }
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${safe}_filled.xlsx"`);
+  res.send(fs.readFileSync(filePath));
 });
 
 export default router;

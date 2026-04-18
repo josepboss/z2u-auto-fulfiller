@@ -95,8 +95,17 @@
     log("DL", `Download response: HTTP ${res.status}`);
     if (!res.ok) throw new Error(`Download failed: ${res.status}`);
     const bytes = new Uint8Array(await res.arrayBuffer());
-    log("DL", `Downloaded ${bytes.byteLength} bytes`);
-    return bytes;
+
+    // Preserve original filename from Content-Disposition header; fall back to URL segment
+    const cd = res.headers.get("content-disposition") || "";
+    const cdMatch = cd.match(/filename\*?=(?:UTF-8'')?["']?([^"';\r\n]+)["']?/i);
+    const filename = (cdMatch?.[1] || url.split("/").pop() || "template.xlsx")
+      .replace(/[^\w\-. ]/g, "_")   // sanitise any unsafe chars
+      .replace(/^_+|_+$/g, "")
+      || "template.xlsx";
+
+    log("DL", `Downloaded ${bytes.byteLength} bytes → filename: "${filename}"`);
+    return { bytes, filename };
   }
 
   // ── Backend call ───────────────────────────────────────────────────────────
@@ -178,8 +187,10 @@
     return null;
   }
 
-  async function uploadAndConfirm(filledBytes) {
-    const file = new File([new Uint8Array(filledBytes)], "fulfilled_order.xlsx", {
+  async function uploadAndConfirm(filledBytes, filename) {
+    const uploadName = filename || "template.xlsx";
+    log("UPLOAD", `[A] Creating file object as: "${uploadName}"`);
+    const file = new File([new Uint8Array(filledBytes)], uploadName, {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
 
@@ -610,7 +621,8 @@
       }
       const templateUrl = templateLink.getAttribute("href");
       log("DETAIL", `[9] Template link: text="${templateLink.textContent?.trim()}" href="${templateUrl}"`);
-      const templateBlob = await downloadBlob(templateUrl);
+      const { bytes: templateBlob, filename: templateFilename } = await downloadBlob(templateUrl);
+      log("DETAIL", `[9] Original template filename: "${templateFilename}"`);
 
       // ── [10] Backend ───────────────────────────────────────────────────────
       log("DETAIL", "[10] Sending to backend…");
@@ -630,7 +642,7 @@
 
       // ── [11] Upload + confirm delivered ───────────────────────────────────
       log("DETAIL", "[11] Uploading filled file…");
-      const uploaded = await uploadAndConfirm(filledBytes);
+      const uploaded = await uploadAndConfirm(filledBytes, templateFilename);
       if (uploaded) {
         await bgMarkProcessed(orderId);
         log("DETAIL", `[11] ✅ Order ${orderId} fully completed and marked processed.`);
