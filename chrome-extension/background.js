@@ -21,17 +21,23 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== "refresh_orders") return;
 
-  chrome.tabs.query({ url: "https://z2u.com/sellOrder/index*" }, (tabs) => {
-    if (tabs.length > 0) {
-      chrome.tabs.reload(tabs[0].id, () => {
-        console.log("[Z2U] Refreshed sell order tab.");
+  // Query for both z2u.com and www.z2u.com variants
+  chrome.tabs.query({}, (allTabs) => {
+    const z2uTab = allTabs.find(
+      (t) => t.url && t.url.includes("z2u.com/sellOrder/index")
+    );
+
+    if (z2uTab) {
+      chrome.tabs.reload(z2uTab.id, () => {
+        console.log(`[Z2U] Refreshed tab ${z2uTab.id}: ${z2uTab.url}`);
       });
     } else {
-      chrome.tabs.create({ url: CONFIG.Z2U_ORDERS_URL, active: false });
+      // Do NOT open a new tab — just wait for the user to have the page open
+      console.log("[Z2U] No Z2U sell order tab found. Skipping refresh until next cycle.");
     }
-  });
 
-  scheduleNextRefresh();
+    scheduleNextRefresh();
+  });
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -48,11 +54,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }
+
+  if (message.type === "IS_PROCESSED") {
+    const { orderId } = message;
+    chrome.storage.local.get("processed", ({ processed }) => {
+      const set = new Set(processed || []);
+      sendResponse({ processed: set.has(orderId) });
+    });
+    return true;
+  }
+
+  if (message.type === "MARK_PROCESSED") {
+    const { orderId } = message;
+    chrome.storage.local.get("processed", ({ processed }) => {
+      const set = new Set(processed || []);
+      set.add(orderId);
+      chrome.storage.local.set({ processed: Array.from(set) }, () => {
+        sendResponse({ ok: true });
+      });
+    });
+    return true;
+  }
 });
 
 async function fetchMappings() {
-  const url = `${CONFIG.SERVER_URL}/api/admin/mappings`;
-  const res = await fetch(url);
+  const { serverUrl } = await chrome.storage.local.get("serverUrl");
+  const base = serverUrl || CONFIG.SERVER_URL;
+  const res = await fetch(`${base}/api/admin/mappings`);
   if (!res.ok) throw new Error(`Failed to fetch mappings: ${res.status}`);
   return await res.json();
 }
@@ -70,13 +98,22 @@ async function handleOrderProcessing(orderData) {
 
   console.log(`[Z2U] Sending order ${orderId} to backend for processing.`);
 
+  const { serverUrl } = await chrome.storage.local.get("serverUrl");
+  const base = serverUrl || CONFIG.SERVER_URL;
+
   const formData = new FormData();
-  formData.append("file", new Blob([templateBlob], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "template.xlsx");
+  formData.append(
+    "file",
+    new Blob([new Uint8Array(templateBlob)], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+    "template.xlsx"
+  );
   formData.append("title", title);
   formData.append("quantity", String(quantity));
   formData.append("orderId", orderId);
 
-  const res = await fetch(`${CONFIG.SERVER_URL}/api/process-order`, {
+  const res = await fetch(`${base}/api/process-order`, {
     method: "POST",
     body: formData,
   });
@@ -88,6 +125,7 @@ async function handleOrderProcessing(orderData) {
 
   const arrayBuffer = await res.arrayBuffer();
 
+  // Mark as processed in persistent storage
   processedSet.add(orderId);
   await chrome.storage.local.set({ processed: Array.from(processedSet) });
 
