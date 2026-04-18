@@ -100,15 +100,42 @@
   }
 
   // ── Backend call ───────────────────────────────────────────────────────────
+  // Content scripts call the backend directly via fetch (no chrome.runtime relay)
+  // to avoid binary data serialization issues through the extension message bus.
 
-  function sendToBackend(data) {
-    log("BACKEND", `Sending to backend → orderId=${data.orderId} title="${data.title.slice(0,40)}..." qty=${data.quantity} blobSize=${data.templateBlob.length}`);
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: "PROCESS_ORDER", data }, (r) => {
-        log("BACKEND", `Backend response →`, r);
-        resolve(r);
-      });
+  async function sendToBackend({ orderId, title, quantity, templateBlob }) {
+    log("BACKEND", `Sending to backend → orderId=${orderId} title="${title.slice(0, 40)}..." qty=${quantity} blobSize=${templateBlob.length}`);
+
+    const { serverUrl } = await chrome.storage.local.get("serverUrl");
+    const base = serverUrl || CONFIG.SERVER_URL;
+
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new Blob([new Uint8Array(templateBlob)], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      }),
+      "template.xlsx"
+    );
+    formData.append("title", title);
+    formData.append("quantity", String(quantity));
+    formData.append("orderId", orderId);
+
+    const res = await fetch(`${base}/api/process-order`, {
+      method: "POST",
+      body: formData,
     });
+
+    log("BACKEND", `Backend HTTP ${res.status} ${res.statusText}`);
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Backend ${res.status}: ${text}`);
+    }
+
+    const arrayBuffer = await res.arrayBuffer();
+    log("BACKEND", `Backend returned ${arrayBuffer.byteLength} bytes (filled xlsx)`);
+    return new Uint8Array(arrayBuffer);
   }
 
   // ── Upload filled file ─────────────────────────────────────────────────────
@@ -587,24 +614,19 @@
 
       // ── [10] Backend ───────────────────────────────────────────────────────
       log("DETAIL", "[10] Sending to backend…");
-      const response = await sendToBackend({
-        orderId,
-        title: resolvedTitle,
-        quantity,
-        templateBlob: Array.from(templateBlob),
-      });
-
-      if (!response?.ok) {
-        err("DETAIL", `[10] Backend returned error: ${response?.error}`);
+      let filledBytes;
+      try {
+        filledBytes = await sendToBackend({
+          orderId,
+          title: resolvedTitle,
+          quantity,
+          templateBlob: Array.from(templateBlob),
+        });
+        log("DETAIL", `[10] ✅ Backend success. Filled file size: ${filledBytes.length} bytes`);
+      } catch (backendErr) {
+        err("DETAIL", `[10] Backend failed: ${backendErr.message}`);
         return;
       }
-      if (response.result?.skipped) {
-        log("DETAIL", "[10] Backend skipped (already processed there).");
-        return;
-      }
-      log("DETAIL", `[10] ✅ Backend success. Filled file size: ${response.result?.filledFile?.length ?? 0} bytes`);
-
-      const filledBytes = response.result.filledFile;
 
       // ── [11] Upload + confirm delivered ───────────────────────────────────
       log("DETAIL", "[11] Uploading filled file…");
