@@ -268,6 +268,11 @@
     // ── [2] Title extraction ─────────────────────────────────────────────────
     let title = "";
 
+    // Strip leading ": " that Z2U injects into sibling element text — keep the rest as-is
+    function cleanTitle(raw) {
+      return (raw || "").replace(/^[\s:]+/, "").trim();
+    }
+
     // Try A: leaf element labelled "Product Title"
     const allEls = Array.from(document.querySelectorAll("*"));
     for (const el of allEls) {
@@ -275,8 +280,9 @@
       const t = el.textContent?.trim() || "";
       if (/^product\s*title$/i.test(t)) {
         const sib = el.nextElementSibling || el.parentElement?.nextElementSibling;
-        title = sib?.textContent?.trim() || "";
-        log("DETAIL", `[2A] Found "Product Title" label → sibling text: "${title.slice(0, 80)}"`);
+        const raw = sib?.textContent?.trim() || "";
+        title = cleanTitle(raw);
+        log("DETAIL", `[2A] Found "Product Title" label → raw: "${raw.slice(0, 80)}" → cleaned: "${title.slice(0, 80)}"`);
         break;
       }
     }
@@ -286,7 +292,7 @@
       for (const row of document.querySelectorAll("tr, dl dt, .info-row, .detail-row")) {
         if ((row.textContent || "").toLowerCase().includes("product title")) {
           const next = row.nextElementSibling || row.querySelector("td:nth-child(2), dd");
-          title = next?.textContent?.trim() || "";
+          title = cleanTitle(next?.textContent?.trim() || "");
           log("DETAIL", `[2B] Row approach → "${title.slice(0, 80)}"`);
           if (title) break;
         }
@@ -296,7 +302,7 @@
     // Try C: any element with class containing "product" + "title"
     if (!title) {
       const el = document.querySelector('[class*="productTitle"], [class*="product-title"], [class*="goodsName"]');
-      title = el?.textContent?.trim() || "";
+      title = cleanTitle(el?.textContent?.trim() || "");
       log("DETAIL", `[2C] Class-based approach → "${title.slice(0, 80)}"`);
     }
 
@@ -316,20 +322,24 @@
 
     log("DETAIL", `[3] Mappings available: ${JSON.stringify(Object.keys(mappings))}`);
 
+    // Fuzzy lookup: exact first, then normalised (trim + collapse spaces)
+    function normalise(s) { return s.replace(/\s+/g, " ").trim(); }
+    let resolvedTitle = title;
     if (!mappings[title]) {
-      warn("DETAIL", `[3] No mapping for title: "${title}"`);
-      // Try trimmed/normalised comparison and show closest match
       const keys = Object.keys(mappings);
-      for (const k of keys) {
-        if (k.trim() === title.trim()) {
-          warn("DETAIL", `[3] Whitespace mismatch! Stored key has different whitespace.`);
-        }
+      const fuzzy = keys.find((k) => normalise(k) === normalise(title));
+      if (fuzzy) {
+        warn("DETAIL", `[3] Exact miss but fuzzy match found. Using: "${fuzzy.slice(0, 60)}"`);
+        resolvedTitle = fuzzy;
+      } else {
+        warn("DETAIL", `[3] No mapping for title: "${title}"`);
+        log("DETAIL", `[3] Available keys: ${JSON.stringify(keys)}`);
+        await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
+        return;
       }
-      await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
-      return;
     }
 
-    log("DETAIL", `[3] ✅ Mapping found → productId="${mappings[title]}"`);
+    log("DETAIL", `[3] ✅ Mapping found → productId="${mappings[resolvedTitle]}"`);
 
     // ── [4] Dedup ─────────────────────────────────────────────────────────────
     if (sessionDone.has(orderId)) {
@@ -438,7 +448,7 @@
       log("DETAIL", "[10] Sending to backend…");
       const response = await sendToBackend({
         orderId,
-        title,
+        title: resolvedTitle,
         quantity,
         templateBlob: Array.from(templateBlob),
       });
