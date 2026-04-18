@@ -129,18 +129,26 @@
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  // Find file input that accepts spreadsheets (not images/screenshots)
+  // Find the xlsx upload input — Z2U uses id="upfile" / name="upload" for the
+  // bulk delivery form. FilePond inputs (order_before_img / order_after_img) are
+  // for trade screenshots and must be avoided.
   function findXlsxInput() {
     const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
-    log("UPLOAD", `[B] All file inputs on page: ${inputs.map(i => `accept="${i.accept}" name="${i.name}" id="${i.id}"`).join(" | ")}`);
-    // Prefer one explicitly accepting xlsx/spreadsheet/csv
-    const xlsx = inputs.find((i) => /xlsx|spreadsheet|csv|xls/i.test(i.accept || ""));
-    if (xlsx) return xlsx;
-    // Avoid image-only inputs
-    const nonImage = inputs.find((i) => !/^image/i.test(i.accept || ""));
-    if (nonImage) return nonImage;
-    // Last resort: first input
-    return inputs[0] || null;
+    log("UPLOAD", `[B] All file inputs: ${inputs.map(i => `id="${i.id}" name="${i.name}" accept="${i.accept}"`).join(" | ")}`);
+
+    // Priority 1: known Z2U xlsx input IDs/names
+    const byId   = inputs.find((i) => i.id === "upfile" || i.name === "upload");
+    if (byId) return byId;
+
+    // Priority 2: explicitly accepts spreadsheet types
+    const byAccept = inputs.find((i) => /xlsx|spreadsheet|csv|xls/i.test(i.accept || ""));
+    if (byAccept) return byAccept;
+
+    // Priority 3: exclude FilePond screenshot inputs
+    const nonFilePond = inputs.find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name));
+    if (nonFilePond) return nonFilePond;
+
+    return null;
   }
 
   async function uploadAndConfirm(filledBytes) {
@@ -148,56 +156,45 @@
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
 
-    // ── Step A: Close any accidentally open modals (Escape key) ─────────────
+    // ── Step A: Close any open modals ────────────────────────────────────────
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await sleep(500);
 
-    // ── Step B: Inject into xlsx file input (may be hidden — search all) ────
-    log("UPLOAD", `[B] Scanning for xlsx file input before clicking Upload Form…`);
+    // ── Step B: Find and inject into the xlsx file input ────────────────────
+    log("UPLOAD", `[B] Looking for xlsx file input (id="upfile" or name="upload")…`);
     let input = findXlsxInput();
 
     if (!input) {
-      // Input not yet in DOM — click "Upload Form" to reveal it
-      const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 6000);
-      if (!uploadFormBtn) {
-        err("UPLOAD", "[B] 'Upload Form' button not found.");
-        return false;
-      }
-      log("UPLOAD", `[B] Clicking "Upload Form" to reveal file input…`);
-      uploadFormBtn.click();
-      await sleep(1000);
-      input = await (async () => {
-        const end = Date.now() + 6000;
-        while (Date.now() < end) {
-          const found = findXlsxInput();
-          if (found) return found;
-          await sleep(300);
-        }
-        return null;
-      })();
-    }
-
-    if (!input) {
-      err("UPLOAD", "[B] File input not found after 6s.");
+      err("UPLOAD", "[B] Xlsx file input not found on page.");
+      log("UPLOAD", `[B] All inputs: ${Array.from(document.querySelectorAll("input")).map(i => `type=${i.type} id=${i.id} name=${i.name}`).join(" | ")}`);
       return false;
     }
-    log("UPLOAD", `[B] Using input: accept="${input.accept}" id="${input.id}" name="${input.name}"`);
+    log("UPLOAD", `[B] Targeting input: id="${input.id}" name="${input.name}"`);
 
     injectFileIntoInput(input, file);
-    log("UPLOAD", `[B] File injected (${filledBytes.length} bytes). Waiting 3s for Z2U to process…`);
-    await sleep(3000);
+    log("UPLOAD", `[B] File injected (${filledBytes.length} bytes).`);
+    await sleep(1000);
 
-    // ── Step C: Close any modal that opened (Escape) ─────────────────────────
-    // (handles case where clicking Upload Form opened a screenshot modal instead)
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await sleep(500);
+    // ── Step C: Click "Upload Form" to submit the file ───────────────────────
+    // On Z2U, "Upload Form" acts as the submit trigger for #upfile.
+    log("UPLOAD", `[C] Clicking "Upload Form" to submit the file…`);
+    const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 5000);
+    if (uploadFormBtn) {
+      uploadFormBtn.click();
+      log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting 3s for Z2U to process upload…`);
+      await sleep(3000);
+    } else {
+      warn("UPLOAD", `[C] "Upload Form" button not found — may have submitted automatically.`);
+      await sleep(2000);
+    }
+
     dumpButtons("UPLOAD-BEFORE-CONFIRM");
 
     // ── Step D: Click Confirm Delivered ──────────────────────────────────────
     log("UPLOAD", `[D] Looking for Confirm Delivered button…`);
     const confirmDeliveredBtn =
-      await waitForElementByText("button, a", "confirm delivered", 8000) ||
-      await waitForElementByText("button, a", "delivered", 5000);
+      await waitForElementByText("button", "confirm delivered", 8000) ||
+      await waitForElementByText("button", "delivered", 5000);
 
     if (!confirmDeliveredBtn) {
       warn("UPLOAD", "[D] Confirm Delivered button not found.");
@@ -208,28 +205,36 @@
     confirmDeliveredBtn.click();
     await sleep(3000);
 
-    // ── Step E: Verify Z2U accepted — Confirm Delivered button should vanish ─
-    const stillThere = Array.from(document.querySelectorAll("button, a"))
+    // ── Step E: Verify — Confirm Delivered button should vanish on success ───
+    const stillThere = Array.from(document.querySelectorAll("button"))
       .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
     if (!stillThere) {
       log("UPLOAD", `[E] ✅ Confirm Delivered gone — delivery accepted by Z2U.`);
       return true;
     }
-    // Still there — check for a confirmation modal
-    log("UPLOAD", `[E] Confirm Delivered still visible — looking for modal confirm button…`);
-    const modalConfirm = await waitForElementByText("button", "confirm", 4000);
-    if (modalConfirm) {
-      log("UPLOAD", `[E] Clicking modal confirm: "${modalConfirm.textContent?.trim()}"`);
-      modalConfirm.click();
-      await sleep(2000);
-      const gone = !Array.from(document.querySelectorAll("button, a"))
-        .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
-      if (gone) { log("UPLOAD", `[E] ✅ Delivery confirmed via modal.`); return true; }
+
+    // Still visible — check for a Z2U confirmation modal (separate from page "Confirm" buttons)
+    log("UPLOAD", `[E] Confirm Delivered still visible. Checking for Z2U delivery confirmation modal…`);
+    // Only click a CONFIRM button that is inside a visible modal/dialog, not the page's generic Confirm
+    const modalEl = document.querySelector(".modal, [role='dialog'], .dialog, .popup, [class*='modal'], [class*='dialog']");
+    if (modalEl) {
+      const modalConfirmBtn = Array.from(modalEl.querySelectorAll("button"))
+        .find((b) => /^confirm$/i.test(b.textContent?.trim() || ""));
+      if (modalConfirmBtn) {
+        log("UPLOAD", `[E] Clicking modal-scoped Confirm button…`);
+        modalConfirmBtn.click();
+        await sleep(2000);
+        const gone = !Array.from(document.querySelectorAll("button"))
+          .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
+        if (gone) { log("UPLOAD", `[E] ✅ Delivery confirmed via modal.`); return true; }
+      }
     }
-    // Check for Z2U error message on page
-    const errorMsg = document.querySelector(".error, .alert, [class*='error'], [class*='alert']");
-    if (errorMsg) warn("UPLOAD", `[E] Z2U error on page: "${errorMsg.textContent?.trim()}"`);
-    warn("UPLOAD", `[E] Could not confirm delivery. Check Z2U page manually.`);
+
+    // Check for page error banner
+    const errBanner = document.querySelector(".ant-message, .el-message, [class*='toast'], [class*='notify'], [class*='alert']");
+    if (errBanner) warn("UPLOAD", `[E] Z2U message: "${errBanner.textContent?.trim().slice(0, 200)}"`);
+
+    warn("UPLOAD", `[E] Delivery confirmation uncertain — Trading Status on page: "${document.querySelector("[class*='tradingStatus'], [class*='trading-status'], [class*='progress']")?.textContent?.trim() || "not found"}"`);
     return false;
   }
 
