@@ -1,0 +1,31 @@
+[Z2U][23:44:52.871] INIT ▶ Running on DETAIL page.
+content.js:15 [Z2U][23:44:55.373] DETAIL 📄 Page loaded | orderId="Z9639148852"
+content.js:15 [Z2U][23:44:55.375] DETAIL Waiting 1s for page to fully render…
+content.js:15 [Z2U][23:44:56.383] DETAIL [1] Status → NEW ORDER:true | PREPARING:true | DELIVERING:true | badge:"not found"
+content.js:15 [Z2U][23:44:56.390] DETAIL [2A] Found "Product Title" label → raw: ": ⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domain" → cleaned: "⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains�"
+content.js:15 [Z2U][23:44:56.390] DETAIL [2] Final title: "⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"
+content.js:15 [Z2U][23:44:56.496] DETAIL [3] Mappings available: ["⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"]
+content.js:15 [Z2U][23:44:56.497] DETAIL [3] ✅ Mapping found → productId="1-00d7438d-d8d3-4a0b-b5a6-8c96d1d4cf35"
+content.js:15 [Z2U][23:44:56.499] DETAIL [4] bgIsProcessed → false
+content.js:15 [Z2U][23:44:56.505] DETAIL [5] Found QUANTITY label → next element text: "32" → parsed: 32
+content.js:15 [Z2U][23:44:56.506] DETAIL [5] Using quantity: 32
+content.js:15 [Z2U][23:44:56.507] DETAIL 🚀 Starting fulfillment | orderId=Z9639148852 | qty=32
+content.js:15 [Z2U][23:44:56.509] DETAIL-BEFORE-PREPARING Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "EN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "Upload/View", "Download Bulk Delivery Form Template", "Upload Form", "Confirm Delivered", "Confirm Delivered", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
+content.js:15 [Z2U][23:44:56.513] DETAIL [6] Template link found by: text="Download Bulk Delivery Form Template" href="https://www.z2u.com/downloadFormTemp/order_id/Z9639148852"
+content.js:15 [Z2U][23:44:56.513] DETAIL [6] Page state → hasTemplateLink:true | hasStartTrading:false | hasPrepBtn:false
+content.js:15 [Z2U][23:44:56.514] DETAIL-STATE-CHECK Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "EN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "Upload/View", "Download Bulk Delivery Form Template", "Upload Form", "Confirm Delivered", "Confirm Delivered", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
+content.js:15 [Z2U][23:44:56.514] DETAIL [6-8] Template link already on page — order is in Delivering state. Jumping to download.
+content.js:15 [Z2U][23:44:56.514] DETAIL [9] Looking for template download link…
+content.js:15 [Z2U][23:44:56.515] DETAIL [9] Template link: text="Download Bulk Delivery Form Template" href="https://www.z2u.com/downloadFormTemp/order_id/Z9639148852"
+content.js:15 [Z2U][23:44:56.516] DL Downloading template from: https://www.z2u.com/downloadFormTemp/order_id/Z9639148852
+content.js:15 [Z2U][23:44:57.060] DL Download response: HTTP 200
+content.js:15 [Z2U][23:44:57.152] DL Downloaded 7056 bytes
+content.js:15 [Z2U][23:44:57.152] DETAIL [10] Sending to backend…
+content.js:15 [Z2U][23:44:57.152] BACKEND Sending to backend → orderId=Z9639148852 title="⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accoun..." qty=32 blobSize=7056
+content.js:13 [Z2U][23:45:00.369] BACKEND Backend response → Object
