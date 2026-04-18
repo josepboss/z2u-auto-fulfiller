@@ -16,29 +16,29 @@ router.get("/admin/services", async (_req, res) => {
   try {
     const key = getApiKey();
     const response = await axios.post(LFOLLOWERS_API_URL, null, {
-      params: { key, action: "services" },
+      params: { key, action: "products" },
     });
     res.json({ data: response.data });
   } catch (err) {
-    logger.error({ err }, "Failed to fetch lfollowers services");
-    res.status(500).json({ error: "Failed to fetch services" });
+    logger.error({ err }, "Failed to fetch lfollowers products");
+    res.status(500).json({ error: "Failed to fetch products" });
   }
 });
 
 router.post("/order", async (req, res) => {
-  const { service, link, quantity } = req.body as {
-    service: string;
+  const { product_id, link, quantity } = req.body as {
+    product_id: string;
     link: string;
     quantity: number;
   };
-  if (!service || !link || !quantity) {
-    res.status(400).json({ error: "service, link, and quantity are required" });
+  if (!product_id || !link || !quantity) {
+    res.status(400).json({ error: "product_id, link, and quantity are required" });
     return;
   }
   try {
     const key = getApiKey();
     const response = await axios.post(LFOLLOWERS_API_URL, null, {
-      params: { key, action: "add", service, link, quantity },
+      params: { key, action: "add", product_id, link, quantity },
     });
     res.json({ data: response.data });
   } catch (err) {

@@ -46,9 +46,9 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
     }
 
     const mappings = loadMappings();
-    const serviceId = mappings[title];
+    const productId = mappings[title];
 
-    if (!serviceId) {
+    if (!productId) {
       res
         .status(404)
         .json({ error: `No mapping found for title: "${title}"` });
@@ -56,28 +56,28 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
     }
 
     logger.info(
-      { title, serviceId, quantity, orderId },
+      { title, productId, quantity, orderId },
       "Processing order from Z2U"
     );
 
     const key = getApiKey();
     const lfResponse = await axios.post(LFOLLOWERS_API_URL, null, {
-      params: { key, action: "services" },
+      params: { key, action: "products" },
     });
 
-    const services: Array<{ service: string; email?: string }> =
+    const products: Array<{ product_id: string; email?: string }> =
       lfResponse.data;
 
-    const matchedService = Array.isArray(services)
-      ? services.find((s) => String(s.service) === String(serviceId))
+    const matchedProduct = Array.isArray(products)
+      ? products.find((p) => String(p.product_id) === String(productId))
       : null;
 
     const qty = parseInt(quantity, 10);
     const emails: string[] = [];
 
-    if (matchedService && "email" in matchedService) {
+    if (matchedProduct && "email" in matchedProduct) {
       for (let i = 0; i < qty; i++) {
-        emails.push((matchedService as { email: string }).email);
+        emails.push((matchedProduct as { email: string }).email);
       }
     }
 
@@ -98,7 +98,7 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
     for (let i = 0; i < qty; i++) {
       const row = worksheet.getRow(startRow + i);
       row.getCell(1).value = emails[i] ?? `account_${orderId ?? "unknown"}_${i + 1}`;
-      row.getCell(2).value = serviceId;
+      row.getCell(2).value = productId;
       row.commit();
     }
 

@@ -51,16 +51,16 @@ const html = `<!DOCTYPE html>
 </head>
 <body>
 <h1>Z2U &harr; Lfollowers Admin</h1>
-<p class="sub">Map Z2U Offer Titles to Lfollowers Service IDs for automated order processing.</p>
+<p class="sub">Map Z2U Offer Titles to Lfollowers Product IDs for automated order processing.</p>
 <div id="msg"></div>
 
 <div class="card">
   <h2>Add / Update Mapping</h2>
   <label>Z2U Offer Title (exact match)</label>
   <input id="title" placeholder="e.g. FIFA 25 PS4 Coins 1M" />
-  <label>Lfollowers Service</label>
-  <select id="serviceSelect"><option value="">-- loading services... --</option></select>
-  <label>Or enter Service ID manually</label>
+  <label>Lfollowers Product</label>
+  <select id="serviceSelect"><option value="">-- loading products... --</option></select>
+  <label>Or enter Product ID manually</label>
   <input id="serviceId" placeholder="e.g. 1234" />
   <button onclick="addMapping()">Save Mapping</button>
 </div>
@@ -68,7 +68,7 @@ const html = `<!DOCTYPE html>
 <div class="card">
   <h2>Current Mappings</h2>
   <table id="mappingsTable">
-    <thead><tr><th>Z2U Title</th><th>Service ID</th><th>Action</th></tr></thead>
+    <thead><tr><th>Z2U Title</th><th>Product ID</th><th>Action</th></tr></thead>
     <tbody id="mappingsBody"><tr><td colspan="3" style="color:#64748b">Loading...</td></tr></tbody>
   </table>
 </div>
@@ -87,12 +87,12 @@ async function loadServices() {
     const res = await fetch('/api/admin/services');
     const data = await res.json();
     const sel = document.getElementById('serviceSelect');
-    sel.innerHTML = '<option value="">-- select service --</option>';
+    sel.innerHTML = '<option value="">-- select product --</option>';
     if (data.data && Array.isArray(data.data)) {
       data.data.forEach(s => {
         const o = document.createElement('option');
-        o.value = s.service;
-        o.textContent = \`[\${s.service}] \${s.name} | \${s.category}\`;
+        o.value = s.product_id;
+        o.textContent = \`[\${s.product_id}] \${s.name} | \${s.category}\`;
         sel.appendChild(o);
       });
     }
