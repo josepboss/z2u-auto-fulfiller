@@ -7,11 +7,11 @@
 
   function clickElement(el, label) {
     if (!el) {
-      console.warn(`[Z2U] Element not found: ${label}`);
+      console.warn(`[Z2U] ❌ Element not found: ${label}`);
       return false;
     }
     el.click();
-    console.log(`[Z2U] Clicked: ${label}`);
+    console.log(`[Z2U] ✅ Clicked: ${label}`);
     return true;
   }
 
@@ -25,9 +25,19 @@
     return null;
   }
 
-  // Ask the background service worker whether an order was already processed.
-  // Falls back to a session-level in-memory Set so concurrent scans on the
-  // same page load can't trigger the same order twice.
+  async function waitForElementByText(tag, text, timeout = 8000) {
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      const els = document.querySelectorAll(tag);
+      const found = Array.from(els).find(
+        (el) => el.textContent?.trim().toLowerCase().includes(text.toLowerCase())
+      );
+      if (found) return found;
+      await sleep(300);
+    }
+    return null;
+  }
+
   const inProgressThisSession = new Set();
 
   function isProcessedInBackground(orderId) {
@@ -78,98 +88,190 @@
     return false;
   }
 
-  async function processOrderRow(row, mappings) {
-    const statusCell = row.querySelector('[class*="status"], td:nth-child(3)');
-    const status = statusCell?.textContent?.trim() || "";
+  // ── Order ID extraction ────────────────────────────────────────────────────
+  // Z2U renders two rows per order. The first row contains the order number
+  // in text like "Order number: Z5252643865". We look at the row itself and
+  // the previous sibling row.
+  function extractOrderId(row) {
+    // 1. data attribute
+    const byAttr = row.getAttribute("data-id") ||
+      row.getAttribute("data-order-id") ||
+      row.getAttribute("data-orderid");
+    if (byAttr) return byAttr.trim();
 
+    // 2. Look for "Order number:" text in this row or the preceding sibling row
+    const searchTargets = [row];
+    const prev = row.previousElementSibling;
+    if (prev) searchTargets.unshift(prev);
+
+    for (const target of searchTargets) {
+      const text = target.textContent || "";
+      // Matches "Order number: Z5252643865" or "Order number：Z52526..."
+      const match = text.match(/Order\s*(?:number|num)[：:]\s*([A-Z0-9\-]+)/i);
+      if (match) return match[1].trim();
+    }
+
+    // 3. Any cell whose text looks like an order number (all caps/digits, 8+chars)
+    for (const td of row.querySelectorAll("td, [class*='order']")) {
+      const t = td.textContent?.trim() || "";
+      if (/^[A-Z0-9]{8,}$/.test(t)) return t;
+    }
+
+    return null;
+  }
+
+  // ── Title extraction ───────────────────────────────────────────────────────
+  // The product title lives in the first <td> of the data row, possibly inside
+  // a nested element. We grab the deepest text that looks like a product title.
+  function extractTitle(row) {
+    // Try class-based selectors first
+    for (const sel of [
+      '[class*="title"]',
+      '[class*="product-name"]',
+      '[class*="productName"]',
+      '[class*="goods-name"]',
+    ]) {
+      const el = row.querySelector(sel);
+      if (el) return el.textContent?.trim() || "";
+    }
+    // Fall back: first <td> — strip the order-number line if it appears there
+    const firstTd = row.querySelector("td:nth-child(1)");
+    if (firstTd) {
+      // Clone and remove child elements that contain dates / buyer info
+      const clone = firstTd.cloneNode(true);
+      clone.querySelectorAll('[class*="order-num"], [class*="buyer"], [class*="date"], small, span.num')
+        .forEach((el) => el.remove());
+      return clone.textContent?.trim() || "";
+    }
+    return "";
+  }
+
+  // ── Status extraction ──────────────────────────────────────────────────────
+  // Status is in column 4 in the Z2U seller order table
+  function extractStatus(row) {
+    for (const sel of [
+      '[class*="status"]',
+      '[class*="order-status"]',
+      'td:nth-child(4)',
+    ]) {
+      const el = row.querySelector(sel);
+      if (el) return el.textContent?.trim() || "";
+    }
+    return "";
+  }
+
+  async function processOrderRow(row, mappings) {
+    const status = extractStatus(row);
     if (!status.toUpperCase().includes("NEW ORDER")) return;
 
-    const titleCell = row.querySelector('[class*="title"], td:nth-child(2)');
-    const fullTitle = titleCell?.textContent?.trim() || "";
-
-    // Try multiple selectors for orderId; never fall back to Date.now()
-    const orderIdCell =
-      row.querySelector('[class*="order-id"]') ||
-      row.querySelector('[class*="orderId"]') ||
-      row.querySelector('[data-id]') ||
-      row.querySelector('td:nth-child(1)');
-    const rawId =
-      orderIdCell?.getAttribute("data-id") ||
-      orderIdCell?.textContent?.trim() ||
-      "";
-
-    if (!rawId) {
-      console.warn("[Z2U] Could not determine order ID for row — skipping to avoid duplicate processing.", row);
-      return;
-    }
-    const orderId = rawId;
-
-    const quantityCell = row.querySelector('[class*="quantity"], [class*="qty"], td:nth-child(4)');
+    const fullTitle = extractTitle(row);
+    const orderId = extractOrderId(row);
+    const quantityCell = row.querySelector(
+      '[class*="quantity"], [class*="qty"], td:nth-child(4)'
+    );
     const quantity = parseInt(quantityCell?.textContent?.trim() || "1", 10);
 
-    if (!mappings[fullTitle]) {
-      console.log(`[Z2U] No mapping for: "${fullTitle}", skipping.`);
+    // ── Debug log so you can see exactly what was detected ─────────────────
+    console.log(`[Z2U] 🔍 Row detected | status="${status}" | orderId="${orderId}" | title="${fullTitle}" | qty=${quantity}`);
+
+    if (!orderId) {
+      console.warn("[Z2U] ⚠️ Could not extract order ID — skipping row to avoid duplicate.");
       return;
     }
 
-    // ── Deduplication (two layers) ────────────────────────────────────────────
-    // Layer 1: in-memory guard (same page-load, concurrent rows)
+    if (!mappings[fullTitle]) {
+      console.log(`[Z2U] ℹ️ No mapping for: "${fullTitle}"`);
+      console.log("[Z2U] ℹ️ Available mappings:", Object.keys(mappings));
+      return;
+    }
+
+    // Deduplication
     if (inProgressThisSession.has(orderId)) {
       console.log(`[Z2U] Order ${orderId} already in progress this session.`);
       return;
     }
-    // Layer 2: persistent guard (survives page reloads — stored in background)
     const alreadyDone = await isProcessedInBackground(orderId);
     if (alreadyDone) {
       console.log(`[Z2U] Order ${orderId} already processed (persistent).`);
       return;
     }
 
-    // IMMEDIATELY reserve this orderId before any async work so that a
-    // concurrent scan on the same page cannot pick it up at the same time.
+    // Reserve immediately
     inProgressThisSession.add(orderId);
     await markProcessedInBackground(orderId);
-    // ──────────────────────────────────────────────────────────────────────────
 
-    console.log(`[Z2U] Processing order ${orderId}: "${fullTitle}" x${quantity}`);
+    console.log(`[Z2U] 🚀 Starting fulfillment for order ${orderId}: "${fullTitle}" x${quantity}`);
 
     try {
-      const prepareBtn =
+      // ── Step 1: Click "Prepare" ──────────────────────────────────────────
+      // Try button/link inside the row first
+      let prepareBtn =
         row.querySelector('button[class*="prepare"], a[class*="prepare"]') ||
         Array.from(row.querySelectorAll("button, a")).find(
           (el) => el.textContent?.trim().toLowerCase() === "prepare"
         );
-      if (!clickElement(prepareBtn, "Prepare")) return;
-      await sleep(2000);
 
-      const startTradingBtn =
-        (await waitForElement(
-          'button[class*="start"], button[class*="trading"], a[class*="trading"]'
-        )) ||
-        Array.from(document.querySelectorAll("button, a")).find((el) =>
-          el.textContent?.trim().toLowerCase().includes("start trading")
-        );
-      if (!clickElement(startTradingBtn, "Start Trading")) return;
-      await sleep(2000);
-
-      const confirmPopupBtn =
-        (await waitForElement(
-          '.modal button[class*="confirm"], .popup button[class*="confirm"], .dialog button[class*="confirm"]',
-          4000
-        )) ||
-        Array.from(
-          document.querySelectorAll(".modal button, .popup button, .dialog button")
-        ).find((el) => el.textContent?.trim().toLowerCase() === "confirm");
-      if (confirmPopupBtn) {
-        clickElement(confirmPopupBtn, "Confirm (popup)");
-        await sleep(2000);
+      // If not in the row, try "Order Detail" link to open the detail view
+      if (!prepareBtn) {
+        const detailLink =
+          row.querySelector('a[class*="detail"], a[href*="detail"]') ||
+          Array.from(row.querySelectorAll("a, button")).find(
+            (el) => el.textContent?.trim().toLowerCase().includes("order detail")
+          );
+        if (detailLink) {
+          console.log("[Z2U] Clicking 'Order Detail' to open detail view...");
+          detailLink.click();
+          await sleep(2500);
+          // Now look for Prepare in the modal / expanded panel
+          prepareBtn =
+            await waitForElement('button[class*="prepare"], a[class*="prepare"]', 5000) ||
+            await waitForElementByText("button, a", "prepare", 5000);
+        }
       }
 
-      const templateLinkEl = document.querySelector('a[href*="template"], a[href*=".xlsx"]');
+      if (!clickElement(prepareBtn, "Prepare")) {
+        console.error("[Z2U] ❌ Prepare button not found. Check DevTools for the button's class name.");
+        return;
+      }
+      await sleep(2500);
+
+      // ── Step 2: Click "Start Trading" ────────────────────────────────────
+      const startTradingBtn =
+        await waitForElement(
+          'button[class*="start"], button[class*="trading"], a[class*="trading"]', 6000
+        ) ||
+        await waitForElementByText("button, a", "start trading", 6000);
+
+      if (!clickElement(startTradingBtn, "Start Trading")) {
+        console.error("[Z2U] ❌ Start Trading button not found.");
+        return;
+      }
+      await sleep(2500);
+
+      // ── Step 3: Confirm popup (if any) ───────────────────────────────────
+      const confirmPopupBtn =
+        await waitForElement(
+          '.modal button[class*="confirm"], .popup button[class*="confirm"], .dialog button[class*="confirm"], [class*="modal"] button[class*="ok"]',
+          4000
+        ) ||
+        await waitForElementByText(
+          ".modal button, .popup button, .dialog button, [class*='modal'] button",
+          "confirm",
+          4000
+        );
+      if (confirmPopupBtn) {
+        clickElement(confirmPopupBtn, "Confirm (popup)");
+        await sleep(2500);
+      }
+
+      // ── Step 4: Download template ─────────────────────────────────────────
+      const templateLinkEl = document.querySelector(
+        'a[href*="template"], a[href*=".xlsx"], a[download]'
+      );
       const templateUrl = templateLinkEl?.getAttribute("href");
 
       if (!templateUrl) {
-        console.error("[Z2U] Could not find template download link.");
+        console.error("[Z2U] ❌ Could not find template download link.");
         return;
       }
 
@@ -181,6 +283,7 @@
         return;
       }
 
+      // ── Step 5: Send to backend ───────────────────────────────────────────
       const response = await new Promise((resolve) => {
         chrome.runtime.sendMessage(
           {
@@ -200,22 +303,22 @@
         console.error("[Z2U] Backend processing failed:", response?.error);
         return;
       }
-
       if (response.result?.skipped) {
-        console.log(`[Z2U] Order ${orderId} was skipped by backend (already processed).`);
+        console.log(`[Z2U] Order ${orderId} skipped by backend.`);
         return;
       }
 
       const filledBytes = response.result.filledFile;
 
+      // ── Step 6: Upload filled file + confirm delivered ────────────────────
       const uploaded = await uploadFilledFile(
         filledBytes,
         'input[type="file"]',
-        'button[class*="delivered"], button[class*="confirm-delivered"]'
+        'button[class*="delivered"], button[class*="confirm-delivered"], button[class*="confirmDelivered"]'
       );
 
       if (uploaded) {
-        console.log(`[Z2U] Order ${orderId} fully processed and delivered.`);
+        console.log(`[Z2U] ✅ Order ${orderId} fully processed and delivered.`);
       }
     } catch (err) {
       console.error(`[Z2U] Unexpected error processing order ${orderId}:`, err);
@@ -223,7 +326,7 @@
   }
 
   async function scanPage() {
-    console.log("[Z2U] Scanning page for new orders...");
+    console.log("[Z2U] 🔄 Scanning page for new orders...");
 
     const mappings = await new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "GET_MAPPINGS" }, (response) => {
@@ -232,17 +335,16 @@
     });
 
     if (!Object.keys(mappings).length) {
-      console.log("[Z2U] No mappings configured yet.");
+      console.log("[Z2U] ⚠️ No mappings configured yet.");
       return;
     }
+
+    console.log("[Z2U] Loaded mappings:", Object.keys(mappings));
 
     const rows = document.querySelectorAll(
       "table tbody tr, [class*='order-row'], [class*='order-item']"
     );
-    if (!rows.length) {
-      console.log("[Z2U] No order rows found on page.");
-      return;
-    }
+    console.log(`[Z2U] Found ${rows.length} row(s) on page.`);
 
     for (const row of rows) {
       try {
