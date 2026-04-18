@@ -391,10 +391,28 @@
       //   • "START TRADING" button → PREPARING already clicked, skip to [7]
       //   • "PREPARING" button → fresh NEW ORDER, do full flow from [6]
 
+      // Find the template download link by text (most reliable) or by href pattern
+      function findTemplateLink() {
+        const allAnchors = Array.from(document.querySelectorAll("a, button"));
+        // Text-based: look for "download" + "template" in visible text
+        const byText = allAnchors.find((el) => {
+          const t = el.textContent?.trim().toUpperCase() || "";
+          return t.includes("DOWNLOAD") && (t.includes("TEMPLATE") || t.includes("FORM"));
+        });
+        if (byText) return byText;
+        // Href-based fallback
+        return document.querySelector('a[href*="template"], a[href*=".xlsx"], a[href*="download"], a[download]');
+      }
+
       const allBtnsNow = Array.from(document.querySelectorAll("button, a"));
-      const hasTemplateLink = !!document.querySelector('a[href*="template"], a[href*=".xlsx"], a[download]');
+      const templateLinkEl  = findTemplateLink();
+      const hasTemplateLink = !!templateLinkEl;
       const hasStartTrading = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase().includes("START TRADING"));
       const hasPrepBtn      = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
+
+      if (templateLinkEl) {
+        log("DETAIL", `[6] Template link found by: text="${templateLinkEl.textContent?.trim()}" href="${templateLinkEl.getAttribute("href")}"`);
+      }
 
       log("DETAIL", `[6] Page state → hasTemplateLink:${hasTemplateLink} | hasStartTrading:${hasStartTrading} | hasPrepBtn:${hasPrepBtn}`);
       dumpButtons("DETAIL-STATE-CHECK");
@@ -464,18 +482,17 @@
 
       // ── [9] Template download ──────────────────────────────────────────────
       log("DETAIL", "[9] Looking for template download link…");
-      const templateLink = document.querySelector(
-        'a[href*="template"], a[href*=".xlsx"], a[download]'
-      );
+      // Re-query after any page changes (clicking START TRADING may re-render)
+      const templateLink = findTemplateLink();
       if (!templateLink) {
         err("DETAIL", "[9] Template download link NOT found.");
-        log("DETAIL", "[9] All <a> hrefs on page:",
-          Array.from(document.querySelectorAll("a[href]")).map((a) => a.getAttribute("href")).join(", ")
+        log("DETAIL", "[9] All <a> elements on page:",
+          Array.from(document.querySelectorAll("a")).map((a) => `"${a.textContent?.trim()}" → ${a.getAttribute("href")}`).join(" | ")
         );
         return;
       }
-      const templateUrl  = templateLink.getAttribute("href");
-      log("DETAIL", `[9] Template link found: "${templateUrl}"`);
+      const templateUrl = templateLink.getAttribute("href");
+      log("DETAIL", `[9] Template link: text="${templateLink.textContent?.trim()}" href="${templateUrl}"`);
       const templateBlob = await downloadBlob(templateUrl);
 
       // ── [10] Backend ───────────────────────────────────────────────────────
