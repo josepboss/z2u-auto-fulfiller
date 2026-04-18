@@ -1,0 +1,26 @@
+[Z2U][11:00:38.350] INIT ▶ Running on LIST page. Will scan every 30s.
+content.js:15 [Z2U][11:00:41.185] LIST 📋 Scan started.
+content.js:15 [Z2U][11:00:41.592] LIST Mappings loaded: 1 entries → ["⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"]
+content.js:15 [Z2U][11:00:41.593] LIST Found 2 .orderPanel(s).
+content.js:15 [Z2U][11:00:41.593] LIST Panel status: "DELIVERING"
+content.js:15 [Z2U][11:00:41.593] LIST 🔍 NEW ORDER → orderId="Z1144625572" | title="Telegram members / subscribers 💎 High Quality 🎉 Channel / group 💎" | href="https://www.z2u.com/sellOrder?order_id=Z1144625572"
+content.js:19 [Z2U] LIST ⚠️  No mapping for title: "Telegram members / subscribers 💎 High Quality 🎉 Channel / group 💎"
+warn @ content.js:19Understand this warning
+content.js:15 [Z2U][11:00:41.594] LIST Available mappings: ["⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"]
+content.js:15 [Z2U][11:00:41.594] LIST Panel status: "DELIVERING"
+content.js:15 [Z2U][11:00:41.594] LIST 🔍 NEW ORDER → orderId="Z5252643865" | title="⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |" | href="https://www.z2u.com/sellOrder?order_id=Z5252643865"
+content.js:15 [Z2U][11:00:41.607] LIST Order Z5252643865 already processed (persistent storage).
+content.js:15 [Z2U][11:00:41.607] LIST ✅ Scan complete — no unprocessed NEW ORDER panels.
+content.js:15 [Z2U][11:01:08.353] LIST 📋 Scan started.
+content.js:15 [Z2U][11:01:08.533] LIST Mappings loaded: 1 entries → ["⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"]
+content.js:15 [Z2U][11:01:08.534] LIST Found 2 .orderPanel(s).
+content.js:15 [Z2U][11:01:08.534] LIST Panel status: "DELIVERING"
+content.js:15 [Z2U][11:01:08.534] LIST 🔍 NEW ORDER → orderId="Z1144625572" | title="Telegram members / subscribers 💎 High Quality 🎉 Channel / group 💎" | href="https://www.z2u.com/sellOrder?order_id=Z1144625572"
+content.js:19 [Z2U] LIST ⚠️  No mapping for title: "Telegram members / subscribers 💎 High Quality 🎉 Channel / group 💎"
+warn @ content.js:19
+runListPage @ content.js:212Understand this warning
+content.js:15 [Z2U][11:01:08.535] LIST Available mappings: ["⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"]
+content.js:15 [Z2U][11:01:08.535] LIST Panel status: "DELIVERING"
+content.js:15 [Z2U][11:01:08.535] LIST 🔍 NEW ORDER → orderId="Z5252643865" | title="⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |" | href="https://www.z2u.com/sellOrder?order_id=Z5252643865"
+content.js:15 [Z2U][11:01:08.637] LIST Order Z5252643865 already processed (persistent storage).
+content.js:15 [Z2U][11:01:08.637] LIST ✅ Scan complete — no unprocessed NEW ORDER panels.
