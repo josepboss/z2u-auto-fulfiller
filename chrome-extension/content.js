@@ -178,11 +178,14 @@
     }
 
     for (const panel of panels) {
-      const statusBadge = panel.querySelector(".smLabel.dangerLabel");
-      const statusText  = statusBadge?.textContent?.trim() || "(no status)";
+      // Look for any status badge (danger or warning label)
+      const statusBadge = panel.querySelector(".smLabel.dangerLabel, .smLabel.warningLabel, .smLabel");
+      const statusText  = statusBadge?.textContent?.trim().toUpperCase() || "(no status)";
       log("LIST", `Panel status: "${statusText}"`);
 
-      if (!statusBadge || !statusText.toUpperCase().includes("NEW ORDER")) continue;
+      // Process NEW ORDER and PREPARING states (both need to reach START TRADING)
+      const isActionable = statusText.includes("NEW ORDER") || statusText.includes("PREPARING");
+      if (!isActionable) continue;
 
       // Order ID
       const copyBtn              = panel.querySelector("[data-clipboard-text]");
@@ -255,13 +258,16 @@
     await sleep(1000);
 
     // ── [1] Status check ────────────────────────────────────────────────────
-    const pageText  = document.body.textContent || "";
-    const hasNew    = pageText.toUpperCase().includes("NEW ORDER");
-    const statusBadge = document.querySelector(".smLabel.dangerLabel, [class*='statusLabel'], .order-status");
-    log("DETAIL", `[1] Status → pageText includes "NEW ORDER": ${hasNew} | badge: "${statusBadge?.textContent?.trim() || "not found"}"`);
+    const pageText    = document.body.textContent?.toUpperCase() || "";
+    const statusBadge = document.querySelector(".smLabel.dangerLabel, .smLabel.warningLabel, .smLabel, [class*='statusLabel'], .order-status");
+    const badgeText   = statusBadge?.textContent?.trim().toUpperCase() || "not found";
+    const hasNew      = pageText.includes("NEW ORDER");
+    const hasPreparing = pageText.includes("PREPARING");
+    const isActionable = hasNew || hasPreparing;
+    log("DETAIL", `[1] Status → NEW ORDER: ${hasNew} | PREPARING: ${hasPreparing} | badge: "${badgeText}"`);
 
-    if (!hasNew) {
-      log("DETAIL", `[1] Order ${orderId} is not in NEW ORDER state — skipping.`);
+    if (!isActionable) {
+      log("DETAIL", `[1] Order ${orderId} is not in an actionable state (not NEW ORDER or PREPARING) — skipping.`);
       return;
     }
 
