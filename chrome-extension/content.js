@@ -374,22 +374,33 @@
     dumpButtons("DETAIL-BEFORE-PREPARING");
 
     try {
-      // ── [6] Click PREPARING ────────────────────────────────────────────────
-      log("DETAIL", "[6] Waiting for PREPARING button (8s)…");
-      const preparingBtn = await waitForElementByText("button, a", "PREPARING", 8000);
-      if (!preparingBtn) {
-        err("DETAIL", "[6] PREPARING button not found after 8s.");
-        dumpButtons("DETAIL-[6]-FAILED");
-        return;
+      // ── [6] Detect current order state then advance ────────────────────────
+      // Z2U flow: PREPARING → START TRADING → (modal CONFIRM) → upload
+      // If a previous run already clicked PREPARING, the button is gone and
+      // START TRADING is already showing — skip straight to step 7.
+
+      const immediateStartBtn = Array.from(document.querySelectorAll("button, a"))
+        .find((b) => b.textContent?.trim().toUpperCase().includes("START TRADING"));
+
+      if (immediateStartBtn) {
+        log("DETAIL", "[6] START TRADING already visible → order is past PREPARING state. Skipping PREPARING click.");
+      } else {
+        log("DETAIL", "[6] Waiting for PREPARING button (8s)…");
+        const preparingBtn = await waitForElementByText("button, a", "PREPARING", 8000);
+        if (!preparingBtn) {
+          err("DETAIL", "[6] PREPARING button not found after 8s.");
+          dumpButtons("DETAIL-[6]-FAILED");
+          return;
+        }
+        log("DETAIL", `[6] Found PREPARING button: tag=${preparingBtn.tagName} text="${preparingBtn.textContent?.trim()}" class="${preparingBtn.className}"`);
+        preparingBtn.click();
+        log("DETAIL", "[6] ✅ Clicked PREPARING. Waiting 3s for page to update…");
+        await sleep(3000);
       }
-      log("DETAIL", `[6] Found PREPARING button: tag=${preparingBtn.tagName} text="${preparingBtn.textContent?.trim()}" class="${preparingBtn.className}"`);
-      preparingBtn.click();
-      log("DETAIL", "[6] ✅ Clicked PREPARING. Waiting 3s…");
-      await sleep(3000);
 
       // ── [7] Click START TRADING ────────────────────────────────────────────
       log("DETAIL", "[7] Waiting for START TRADING button (10s)…");
-      dumpButtons("DETAIL-AFTER-PREPARING");
+      dumpButtons("DETAIL-BEFORE-START-TRADING");
       const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
       if (!startBtn) {
         err("DETAIL", "[7] START TRADING button not found after 10s.");
