@@ -1,0 +1,27 @@
+[Z2U][10:51:29.387] INIT ▶ Running on DETAIL page.
+content.js:15 [Z2U][10:51:32.177] DETAIL 📄 Page loaded | orderId="Z2825138962"
+content.js:15 [Z2U][10:51:32.179] DETAIL Waiting 1s for page to fully render…
+content.js:15 [Z2U][10:51:33.183] DETAIL [1] Status → NEW ORDER:true | PREPARING:true | DELIVERING:true | badge:"not found"
+content.js:15 [Z2U][10:51:33.191] DETAIL [2A] Found "Product Title" label → raw: ": ⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domain" → cleaned: "⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains�"
+content.js:15 [Z2U][10:51:33.191] DETAIL [2] Final title: "⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"
+content.js:15 [Z2U][10:51:34.368] DETAIL [3] Mappings available: ["⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"]
+content.js:15 [Z2U][10:51:34.368] DETAIL [3] ✅ Mapping found → productId="1-00d7438d-d8d3-4a0b-b5a6-8c96d1d4cf35"
+content.js:15 [Z2U][10:51:34.371] DETAIL [4] bgIsProcessed → false
+content.js:15 [Z2U][10:51:34.377] DETAIL [5] Found QUANTITY label → next element text: "100" → parsed: 100
+content.js:15 [Z2U][10:51:34.377] DETAIL [5] Using quantity: 100
+content.js:15 [Z2U][10:51:34.377] DETAIL 🚀 Starting fulfillment | orderId=Z2825138962 | qty=100
+content.js:15 [Z2U][10:51:34.378] DETAIL-BEFORE-PREPARING Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "EN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "Upload/View", "Download Bulk Delivery Form Template", "Upload Form", "Confirm Delivered", "Confirm Delivered", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
+content.js:15 [Z2U][10:51:34.380] DETAIL [6] Page state → hasTemplateLink:false | hasStartTrading:false | hasPrepBtn:false
+content.js:15 [Z2U][10:51:34.381] DETAIL-STATE-CHECK Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "EN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "Upload/View", "Download Bulk Delivery Form Template", "Upload Form", "Confirm Delivered", "Confirm Delivered", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
+content.js:22 [Z2U] DETAIL ❌ [6] Neither PREPARING nor START TRADING nor template link found.
+err @ content.js:22Understand this error
+content.js:15 [Z2U][10:51:34.382] DETAIL-[6]-STUCK Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "EN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "Upload/View", "Download Bulk Delivery Form Template", "Upload Form", "Confirm Delivered", "Confirm Delivered", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
