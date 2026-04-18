@@ -1,0 +1,28 @@
+[Z2U][10:27:31.813] INIT ▶ Running on DETAIL page.
+content.js:15 [Z2U][10:27:34.316] DETAIL 📄 Page loaded | orderId="Z5252643865"
+content.js:15 [Z2U][10:27:34.316] DETAIL Waiting 1s for page to fully render…
+content.js:15 [Z2U][10:27:35.321] DETAIL [1] Status → pageText includes "NEW ORDER": true | badge: "not found"
+content.js:15 [Z2U][10:27:35.325] DETAIL [2A] Found "Product Title" label → raw: ": ⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domain" → cleaned: "⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains�"
+content.js:15 [Z2U][10:27:35.325] DETAIL [2] Final title: "⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"
+content.js:15 [Z2U][10:27:35.419] DETAIL [3] Mappings available: ["⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"]
+content.js:15 [Z2U][10:27:35.419] DETAIL [3] ✅ Mapping found → productId="1-00d7438d-d8d3-4a0b-b5a6-8c96d1d4cf35"
+content.js:15 [Z2U][10:27:35.426] DETAIL [4] bgIsProcessed → false
+content.js:15 [Z2U][10:27:35.429] DETAIL [5] Found QUANTITY label → next element text: "32" → parsed: 32
+content.js:15 [Z2U][10:27:35.429] DETAIL [5] Using quantity: 32
+content.js:15 [Z2U][10:27:35.429] DETAIL 🚀 Starting fulfillment | orderId=Z5252643865 | qty=32
+content.js:15 [Z2U][10:27:35.431] DETAIL-BEFORE-PREPARING Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "EN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "START TRADING", "START TRADING", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
+content.js:15 [Z2U][10:27:35.431] DETAIL [6] Waiting for PREPARING button (8s)…
+content.js:22 [Z2U] DETAIL ❌ [6] PREPARING button not found after 8s.
+err @ content.js:22
+runDetailPage @ content.js:381
+setTimeout
+(anonymous) @ content.js:37
+sleep @ content.js:37
+waitForElementByText @ content.js:50Understand this error
+content.js:15 [Z2U][10:27:43.633] DETAIL-[6]-FAILED Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "EN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "START TRADING", "START TRADING", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
