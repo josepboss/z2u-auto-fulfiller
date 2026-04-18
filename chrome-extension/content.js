@@ -2,8 +2,34 @@
   "use strict";
 
   const href = window.location.href;
-  const isListPage  = /sellOrder\/index/.test(href);
+  const isListPage   = /sellOrder\/index/.test(href);
   const isDetailPage = !isListPage && /sellOrder(\?|$)/.test(href);
+
+  // ── Logging helper ─────────────────────────────────────────────────────────
+
+  function log(step, msg, ...extra) {
+    const ts = new Date().toISOString().slice(11, 23);
+    if (extra.length) {
+      console.log(`[Z2U][${ts}] ${step} ${msg}`, ...extra);
+    } else {
+      console.log(`[Z2U][${ts}] ${step} ${msg}`);
+    }
+  }
+  function warn(step, msg, ...extra) {
+    console.warn(`[Z2U] ${step} ⚠️  ${msg}`, ...extra);
+  }
+  function err(step, msg, ...extra) {
+    console.error(`[Z2U] ${step} ❌ ${msg}`, ...extra);
+  }
+
+  // Dumps all visible button/link texts on the page — useful for debugging
+  function dumpButtons(label) {
+    const btns = Array.from(document.querySelectorAll("button, a[class*='btn'], a[class*='button']"))
+      .map((b) => `"${b.textContent?.trim()}"`)
+      .filter((t) => t !== '""')
+      .join(", ");
+    log(label, `Buttons on page → [${btns}]`);
+  }
 
   // ── Shared utilities ───────────────────────────────────────────────────────
 
@@ -37,9 +63,9 @@
   }
 
   function clickBtn(el, label) {
-    if (!el) { console.warn(`[Z2U] ❌ Not found: ${label}`); return false; }
+    if (!el) { err("CLICK", `Not found: ${label}`); return false; }
     el.click();
-    console.log(`[Z2U] ✅ Clicked: ${label}`);
+    log("CLICK", `✅ Clicked: ${label}`);
     return true;
   }
 
@@ -64,24 +90,37 @@
   // ── Template download ──────────────────────────────────────────────────────
 
   async function downloadBlob(url) {
+    log("DL", `Downloading template from: ${url}`);
     const res = await fetch(url, { credentials: "include" });
+    log("DL", `Download response: HTTP ${res.status}`);
     if (!res.ok) throw new Error(`Download failed: ${res.status}`);
-    return new Uint8Array(await res.arrayBuffer());
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    log("DL", `Downloaded ${bytes.byteLength} bytes`);
+    return bytes;
   }
 
   // ── Backend call ───────────────────────────────────────────────────────────
 
   function sendToBackend(data) {
+    log("BACKEND", `Sending to backend → orderId=${data.orderId} title="${data.title.slice(0,40)}..." qty=${data.quantity} blobSize=${data.templateBlob.length}`);
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: "PROCESS_ORDER", data }, resolve);
+      chrome.runtime.sendMessage({ type: "PROCESS_ORDER", data }, (r) => {
+        log("BACKEND", `Backend response →`, r);
+        resolve(r);
+      });
     });
   }
 
   // ── Upload filled file ─────────────────────────────────────────────────────
 
   async function uploadAndConfirm(filledBytes) {
+    log("UPLOAD", `Looking for file input (timeout 8s)…`);
     const input = await waitForSelector('input[type="file"]', 8000);
-    if (!input) { console.error("[Z2U] File input not found."); return false; }
+    if (!input) {
+      err("UPLOAD", "File input not found after 8s.");
+      return false;
+    }
+    log("UPLOAD", `File input found: ${input.outerHTML.slice(0, 120)}`);
 
     const dt = new DataTransfer();
     dt.items.add(new File([new Uint8Array(filledBytes)], "fulfilled_order.xlsx", {
@@ -89,29 +128,32 @@
     }));
     Object.defineProperty(input, "files", { value: dt.files, writable: false });
     input.dispatchEvent(new Event("change", { bubbles: true }));
+    log("UPLOAD", `File attached (${filledBytes.length} bytes), waiting 2s…`);
     await sleep(2000);
 
-    // Confirm delivered button
-    const confirmDeliveredBtn = await waitForElementByText(
-      "button, a", "confirm delivered", 8000
-    ) || await waitForElementByText("button, a", "delivered", 5000);
+    log("UPLOAD", `Looking for Confirm Delivered button…`);
+    dumpButtons("UPLOAD");
+
+    const confirmDeliveredBtn =
+      await waitForElementByText("button, a", "confirm delivered", 8000) ||
+      await waitForElementByText("button, a", "delivered", 5000);
 
     if (confirmDeliveredBtn) {
       confirmDeliveredBtn.click();
-      console.log("[Z2U] ✅ Clicked Confirm Delivered.");
+      log("UPLOAD", `✅ Clicked Confirm Delivered: "${confirmDeliveredBtn.textContent?.trim()}"`);
       return true;
     }
-    console.warn("[Z2U] ⚠️ Confirm Delivered button not found.");
+    warn("UPLOAD", "Confirm Delivered button not found after 13s.");
+    dumpButtons("UPLOAD-FAILED");
     return false;
   }
 
   // ══════════════════════════════════════════════════════════════════════════
   //  LIST PAGE  (z2u.com/sellOrder/index)
-  //  – Scans for NEW ORDER rows, reads title + orderId, navigates to detail
   // ══════════════════════════════════════════════════════════════════════════
 
   async function runListPage() {
-    console.log("[Z2U] 📋 List page scan started.");
+    log("LIST", "📋 Scan started.");
 
     const mappings = await new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "GET_MAPPINGS" }, (r) =>
@@ -119,200 +161,240 @@
       );
     });
 
-    if (!Object.keys(mappings).length) {
-      console.log("[Z2U] ⚠️ No mappings configured.");
+    const mappingKeys = Object.keys(mappings);
+    log("LIST", `Mappings loaded: ${mappingKeys.length} entries → ${JSON.stringify(mappingKeys)}`);
+
+    if (!mappingKeys.length) {
+      warn("LIST", "No mappings configured — nothing to do.");
       return;
     }
-    console.log("[Z2U] Mappings:", Object.keys(mappings));
 
-    // Z2U renders each order as a .orderPanel div (NOT table rows).
-    // Structure:
-    //   .orderPanel
-    //     .panelHead
-    //       .o-number  → contains <a>Z1144625572</a> and <span class="neworder">
-    //     .panelBody
-    //       .o-l-col.productInfo  → <a>Product Title</a>
-    //       .o-l-col.productStatus → <div class="smLabel dangerLabel">NEW ORDER</div>
-    //                                <a href="/sellOrder?order_id=...">Order Detail</a>
     const panels = document.querySelectorAll(".orderPanel");
-    console.log(`[Z2U] Found ${panels.length} .orderPanel(s).`);
+    log("LIST", `Found ${panels.length} .orderPanel(s).`);
+
+    if (!panels.length) {
+      warn("LIST", "No .orderPanel divs found. Page may not have loaded yet or structure changed.");
+      log("LIST", "Page body preview:", document.body.innerHTML.slice(0, 500));
+    }
 
     for (const panel of panels) {
-      // Only process panels with a "NEW ORDER" status badge
       const statusBadge = panel.querySelector(".smLabel.dangerLabel");
-      if (!statusBadge || !statusBadge.textContent.trim().toUpperCase().includes("NEW ORDER")) continue;
+      const statusText  = statusBadge?.textContent?.trim() || "(no status)";
+      log("LIST", `Panel status: "${statusText}"`);
 
-      // Order ID: from the clipboard data attribute (most reliable) or link text
-      const copyBtn = panel.querySelector("[data-clipboard-text]");
+      if (!statusBadge || !statusText.toUpperCase().includes("NEW ORDER")) continue;
+
+      // Order ID
+      const copyBtn              = panel.querySelector("[data-clipboard-text]");
       const orderIdFromClipboard = copyBtn?.getAttribute("data-clipboard-text")?.trim();
-      const orderIdFromLink = panel.querySelector(".o-number a")?.textContent?.trim();
-      const orderId = orderIdFromClipboard || orderIdFromLink;
+      const orderIdFromLink      = panel.querySelector(".o-number a")?.textContent?.trim();
+      const orderId              = orderIdFromClipboard || orderIdFromLink;
 
-      // Product title: the anchor inside .productInfo
+      // Title
       const titleEl = panel.querySelector(".o-l-col.productInfo a");
-      const title = titleEl?.textContent?.trim() || "";
+      const title   = titleEl?.textContent?.trim() || "";
 
-      // Order detail link: anchor inside .productStatus pointing to /sellOrder
+      // Detail link
       const detailLink = panel.querySelector('.o-l-col.productStatus a[href*="sellOrder"]');
-      const detailHref = detailLink?.getAttribute("href");
+      const detailHref = detailLink?.getAttribute("href") || "";
 
-      console.log(`[Z2U] 🔍 NEW ORDER panel | orderId="${orderId}" | title="${title.slice(0, 60)}..." | detailHref="${detailHref}"`);
+      log("LIST", `🔍 NEW ORDER → orderId="${orderId}" | title="${title}" | href="${detailHref}"`);
 
       if (!orderId) {
-        console.warn("[Z2U] ⚠️ Could not extract orderId — skipping panel.");
+        warn("LIST", "Could not extract orderId — skipping.");
         continue;
       }
 
       if (!mappings[title]) {
-        console.log(`[Z2U] ℹ️ No mapping for: "${title}"`);
-        console.log("[Z2U] ℹ️ Available mappings:", Object.keys(mappings));
+        warn("LIST", `No mapping for title: "${title}"`);
+        log("LIST", `Available mappings: ${JSON.stringify(mappingKeys)}`);
         continue;
       }
 
-      if (sessionDone.has(orderId)) continue;
-      if (await bgIsProcessed(orderId)) {
-        console.log(`[Z2U] Order ${orderId} already processed.`);
+      if (sessionDone.has(orderId)) {
+        log("LIST", `Order ${orderId} already in progress this session.`);
+        continue;
+      }
+      const alreadyDone = await bgIsProcessed(orderId);
+      if (alreadyDone) {
+        log("LIST", `Order ${orderId} already processed (persistent storage).`);
         continue;
       }
 
       if (!detailHref) {
-        console.warn(`[Z2U] ⚠️ No detail link found for order ${orderId}.`);
+        warn("LIST", `No Order Detail link for ${orderId}.`);
         continue;
       }
 
-      // Save context for the detail page to pick up
       await chrome.storage.local.set({ pendingOrderId: orderId, pendingTitle: title });
-      console.log(`[Z2U] 🔗 Navigating to detail: ${detailHref}`);
+      log("LIST", `🔗 Navigating to detail page: ${detailHref}`);
       window.location.href = detailHref;
-      return; // navigation in progress — stop scanning
+      return;
     }
 
-    console.log("[Z2U] ✅ List scan complete. No unprocessed NEW ORDER panels found.");
+    log("LIST", "✅ Scan complete — no unprocessed NEW ORDER panels.");
   }
 
   // ══════════════════════════════════════════════════════════════════════════
   //  DETAIL PAGE  (z2u.com/sellOrder?order_id=Z...)
-  //  – Self-contained: reads title & quantity from the page itself.
-  //  – No stored-context dependency, so it works regardless of how you arrived.
   // ══════════════════════════════════════════════════════════════════════════
 
   async function runDetailPage() {
-    const params = new URLSearchParams(window.location.search);
+    const params  = new URLSearchParams(window.location.search);
     const orderId = params.get("order_id") || params.get("orderId");
 
-    console.log(`[Z2U] 📄 Detail page | orderId="${orderId}"`);
+    log("DETAIL", `📄 Page loaded | orderId="${orderId}"`);
 
     if (!orderId) {
-      console.warn("[Z2U] No order_id in URL.");
+      warn("DETAIL", "No order_id in URL — stopping.");
       return;
     }
 
-    // ── Guard: must be NEW ORDER status ─────────────────────────────────────
-    // Give the page a moment to fully render
+    // Give page time to fully render
+    log("DETAIL", "Waiting 1s for page to fully render…");
     await sleep(1000);
-    const pageText = document.body.textContent || "";
-    if (!pageText.toUpperCase().includes("NEW ORDER")) {
-      console.log(`[Z2U] Order ${orderId} is not in NEW ORDER state — skipping.`);
+
+    // ── [1] Status check ────────────────────────────────────────────────────
+    const pageText  = document.body.textContent || "";
+    const hasNew    = pageText.toUpperCase().includes("NEW ORDER");
+    const statusBadge = document.querySelector(".smLabel.dangerLabel, [class*='statusLabel'], .order-status");
+    log("DETAIL", `[1] Status → pageText includes "NEW ORDER": ${hasNew} | badge: "${statusBadge?.textContent?.trim() || "not found"}"`);
+
+    if (!hasNew) {
+      log("DETAIL", `[1] Order ${orderId} is not in NEW ORDER state — skipping.`);
       return;
     }
 
-    // ── Extract title from the detail page directly ──────────────────────────
-    // The page has a row: "Product Title : <title text>"
-    // Try multiple approaches to find it.
+    // ── [2] Title extraction ─────────────────────────────────────────────────
     let title = "";
 
-    // Approach 1: look for a label cell containing "Product Title" and read its sibling/next element
-    const allPageElements = Array.from(document.querySelectorAll("*"));
-    for (const el of allPageElements) {
-      const t = el.childElementCount === 0 ? el.textContent?.trim() : "";
-      if (t && /^product\s*title$/i.test(t)) {
-        // Next sibling or parent's next child
-        const sibling = el.nextElementSibling || el.parentElement?.nextElementSibling;
-        if (sibling) { title = sibling.textContent?.trim() || ""; break; }
+    // Try A: leaf element labelled "Product Title"
+    const allEls = Array.from(document.querySelectorAll("*"));
+    for (const el of allEls) {
+      if (el.childElementCount > 0) continue;
+      const t = el.textContent?.trim() || "";
+      if (/^product\s*title$/i.test(t)) {
+        const sib = el.nextElementSibling || el.parentElement?.nextElementSibling;
+        title = sib?.textContent?.trim() || "";
+        log("DETAIL", `[2A] Found "Product Title" label → sibling text: "${title.slice(0, 80)}"`);
+        break;
       }
     }
 
-    // Approach 2: look inside a dl/table structure
+    // Try B: table row containing "product title"
     if (!title) {
-      const rows = document.querySelectorAll("tr, dl dt, .info-row, .detail-row");
-      for (const row of rows) {
+      for (const row of document.querySelectorAll("tr, dl dt, .info-row, .detail-row")) {
         if ((row.textContent || "").toLowerCase().includes("product title")) {
-          const nextEl = row.nextElementSibling || row.querySelector("td:nth-child(2), dd");
-          title = nextEl?.textContent?.trim() || "";
+          const next = row.nextElementSibling || row.querySelector("td:nth-child(2), dd");
+          title = next?.textContent?.trim() || "";
+          log("DETAIL", `[2B] Row approach → "${title.slice(0, 80)}"`);
           if (title) break;
         }
       }
     }
 
-    console.log(`[Z2U] 📄 Title from page: "${title.slice(0, 80)}..."`);
+    // Try C: any element with class containing "product" + "title"
+    if (!title) {
+      const el = document.querySelector('[class*="productTitle"], [class*="product-title"], [class*="goodsName"]');
+      title = el?.textContent?.trim() || "";
+      log("DETAIL", `[2C] Class-based approach → "${title.slice(0, 80)}"`);
+    }
 
-    // ── Check mapping ────────────────────────────────────────────────────────
+    log("DETAIL", `[2] Final title: "${title}"`);
+
+    if (!title) {
+      err("DETAIL", "[2] Could not extract product title from page.");
+      return;
+    }
+
+    // ── [3] Mapping check ────────────────────────────────────────────────────
     const mappings = await new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "GET_MAPPINGS" }, (r) =>
         resolve(r?.mappings || {})
       );
     });
 
+    log("DETAIL", `[3] Mappings available: ${JSON.stringify(Object.keys(mappings))}`);
+
     if (!mappings[title]) {
-      console.log(`[Z2U] ℹ️ No mapping for: "${title}"`);
-      console.log("[Z2U] ℹ️ Available mappings:", Object.keys(mappings));
-      // Clear pending so list page can retry
+      warn("DETAIL", `[3] No mapping for title: "${title}"`);
+      // Try trimmed/normalised comparison and show closest match
+      const keys = Object.keys(mappings);
+      for (const k of keys) {
+        if (k.trim() === title.trim()) {
+          warn("DETAIL", `[3] Whitespace mismatch! Stored key has different whitespace.`);
+        }
+      }
       await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
       return;
     }
 
-    // ── Dedup (session only — persistent mark happens only on success) ────────
+    log("DETAIL", `[3] ✅ Mapping found → productId="${mappings[title]}"`);
+
+    // ── [4] Dedup ─────────────────────────────────────────────────────────────
     if (sessionDone.has(orderId)) {
-      console.log(`[Z2U] Order ${orderId} already in progress this session.`);
+      log("DETAIL", `[4] Already in progress this session — skipping.`);
       return;
     }
-    if (await bgIsProcessed(orderId)) {
-      console.log(`[Z2U] Order ${orderId} already completed (persistent).`);
+    const alreadyDone = await bgIsProcessed(orderId);
+    log("DETAIL", `[4] bgIsProcessed → ${alreadyDone}`);
+    if (alreadyDone) {
+      log("DETAIL", `[4] Order ${orderId} already completed. Use popup → Clear History to retry.`);
       return;
     }
     sessionDone.add(orderId);
-
-    // Clear the pending context now that we've picked it up
     await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
 
-    // ── Extract quantity ─────────────────────────────────────────────────────
+    // ── [5] Quantity ──────────────────────────────────────────────────────────
     let quantity = 1;
     const allNodes = Array.from(document.querySelectorAll("*"));
     for (let j = 0; j < allNodes.length; j++) {
-      const t = allNodes[j].childElementCount === 0 ? allNodes[j].textContent?.trim() : "";
-      if (t && /^quantity$/i.test(t)) {
+      if (allNodes[j].childElementCount > 0) continue;
+      const t = allNodes[j].textContent?.trim() || "";
+      if (/^quantity$/i.test(t)) {
         const next = allNodes[j].nextElementSibling || allNodes[j].parentElement?.nextElementSibling;
-        const val = parseInt(next?.textContent?.trim() || "0", 10);
+        const val  = parseInt(next?.textContent?.trim() || "0", 10);
+        log("DETAIL", `[5] Found QUANTITY label → next element text: "${next?.textContent?.trim()}" → parsed: ${val}`);
         if (val > 0) { quantity = val; break; }
       }
     }
-    console.log(`[Z2U] Quantity: ${quantity}`);
+    log("DETAIL", `[5] Using quantity: ${quantity}`);
 
-    console.log(`[Z2U] 🚀 Starting fulfillment | orderId=${orderId} | qty=${quantity}`);
+    log("DETAIL", `🚀 Starting fulfillment | orderId=${orderId} | qty=${quantity}`);
+    dumpButtons("DETAIL-BEFORE-PREPARING");
 
     try {
-      // ── Step 1: Click PREPARING ──────────────────────────────────────────
-      // The button is rendered as <button>PREPARING</button> (red button)
-      const preparingBtn =
-        await waitForElementByText("button, a", "PREPARING", 8000);
-      if (!clickBtn(preparingBtn, "PREPARING")) {
-        console.error("[Z2U] ❌ PREPARING button not found. Page buttons:", 
-          Array.from(document.querySelectorAll("button")).map(b => b.textContent?.trim()));
+      // ── [6] Click PREPARING ────────────────────────────────────────────────
+      log("DETAIL", "[6] Waiting for PREPARING button (8s)…");
+      const preparingBtn = await waitForElementByText("button, a", "PREPARING", 8000);
+      if (!preparingBtn) {
+        err("DETAIL", "[6] PREPARING button not found after 8s.");
+        dumpButtons("DETAIL-[6]-FAILED");
         return;
       }
+      log("DETAIL", `[6] Found PREPARING button: tag=${preparingBtn.tagName} text="${preparingBtn.textContent?.trim()}" class="${preparingBtn.className}"`);
+      preparingBtn.click();
+      log("DETAIL", "[6] ✅ Clicked PREPARING. Waiting 3s…");
       await sleep(3000);
 
-      // ── Step 2: Click START TRADING ──────────────────────────────────────
-      const startTradingBtn =
-        await waitForElementByText("button, a", "START TRADING", 10000);
-      if (!clickBtn(startTradingBtn, "START TRADING")) {
-        console.error("[Z2U] ❌ START TRADING button not found.");
+      // ── [7] Click START TRADING ────────────────────────────────────────────
+      log("DETAIL", "[7] Waiting for START TRADING button (10s)…");
+      dumpButtons("DETAIL-AFTER-PREPARING");
+      const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
+      if (!startBtn) {
+        err("DETAIL", "[7] START TRADING button not found after 10s.");
+        dumpButtons("DETAIL-[7]-FAILED");
         return;
       }
+      log("DETAIL", `[7] Found START TRADING: tag=${startBtn.tagName} text="${startBtn.textContent?.trim()}" class="${startBtn.className}"`);
+      startBtn.click();
+      log("DETAIL", "[7] ✅ Clicked START TRADING. Waiting 2.5s…");
       await sleep(2500);
 
-      // ── Step 3: Confirm modal ────────────────────────────────────────────
-      // Modal has CANCEL (red) and CONFIRM (green) — we want CONFIRM
+      // ── [8] Confirm modal ──────────────────────────────────────────────────
+      log("DETAIL", "[8] Waiting for CONFIRM button in modal (8s)…");
+      dumpButtons("DETAIL-AFTER-START-TRADING");
+
       const allConfirmBtns = await (async () => {
         const end = Date.now() + 8000;
         while (Date.now() < end) {
@@ -324,26 +406,36 @@
         }
         return [];
       })();
+
       if (allConfirmBtns.length) {
-        // Pick the last CONFIRM (green one, not cancel)
-        clickBtn(allConfirmBtns[allConfirmBtns.length - 1], "CONFIRM (modal)");
+        const green = allConfirmBtns[allConfirmBtns.length - 1];
+        log("DETAIL", `[8] Found ${allConfirmBtns.length} CONFIRM button(s), clicking last one: "${green.textContent?.trim()}" class="${green.className}"`);
+        green.click();
+        log("DETAIL", "[8] ✅ Clicked CONFIRM. Waiting 3s…");
         await sleep(3000);
       } else {
-        console.warn("[Z2U] ⚠️ Confirm modal not found — continuing anyway.");
+        warn("DETAIL", "[8] CONFIRM modal not found after 8s — continuing.");
+        dumpButtons("DETAIL-[8]-NO-MODAL");
       }
 
-      // ── Step 4: Download template ────────────────────────────────────────
+      // ── [9] Template download ──────────────────────────────────────────────
+      log("DETAIL", "[9] Looking for template download link…");
       const templateLink = document.querySelector(
         'a[href*="template"], a[href*=".xlsx"], a[download]'
       );
       if (!templateLink) {
-        console.error("[Z2U] ❌ Template download link not found.");
+        err("DETAIL", "[9] Template download link NOT found.");
+        log("DETAIL", "[9] All <a> hrefs on page:",
+          Array.from(document.querySelectorAll("a[href]")).map((a) => a.getAttribute("href")).join(", ")
+        );
         return;
       }
-      const templateUrl = templateLink.getAttribute("href");
+      const templateUrl  = templateLink.getAttribute("href");
+      log("DETAIL", `[9] Template link found: "${templateUrl}"`);
       const templateBlob = await downloadBlob(templateUrl);
 
-      // ── Step 5: Send to backend ──────────────────────────────────────────
+      // ── [10] Backend ───────────────────────────────────────────────────────
+      log("DETAIL", "[10] Sending to backend…");
       const response = await sendToBackend({
         orderId,
         title,
@@ -352,25 +444,29 @@
       });
 
       if (!response?.ok) {
-        console.error("[Z2U] Backend error:", response?.error);
+        err("DETAIL", `[10] Backend returned error: ${response?.error}`);
         return;
       }
       if (response.result?.skipped) {
-        console.log(`[Z2U] Backend skipped order ${orderId}.`);
+        log("DETAIL", "[10] Backend skipped (already processed there).");
         return;
       }
+      log("DETAIL", `[10] ✅ Backend success. Filled file size: ${response.result?.filledFile?.length ?? 0} bytes`);
 
       const filledBytes = response.result.filledFile;
 
-      // ── Step 6: Upload + confirm delivered ───────────────────────────────
+      // ── [11] Upload + confirm delivered ───────────────────────────────────
+      log("DETAIL", "[11] Uploading filled file…");
       const uploaded = await uploadAndConfirm(filledBytes);
       if (uploaded) {
-        // Mark as processed ONLY after successful delivery
         await bgMarkProcessed(orderId);
-        console.log(`[Z2U] ✅ Order ${orderId} fully completed and marked as processed.`);
+        log("DETAIL", `[11] ✅ Order ${orderId} fully completed and marked processed.`);
+      } else {
+        warn("DETAIL", "[11] Upload/confirm step did not complete.");
       }
-    } catch (err) {
-      console.error(`[Z2U] ❌ Error on order ${orderId}:`, err);
+
+    } catch (e) {
+      err("DETAIL", `Unhandled exception:`, e);
     }
   }
 
@@ -378,13 +474,13 @@
 
   function init() {
     if (isListPage) {
-      console.log("[Z2U] Running on LIST page.");
+      log("INIT", "▶ Running on LIST page.");
       setTimeout(runListPage, 2500);
     } else if (isDetailPage) {
-      console.log("[Z2U] Running on DETAIL page.");
+      log("INIT", "▶ Running on DETAIL page.");
       setTimeout(runDetailPage, 2500);
     } else {
-      console.log("[Z2U] Unrecognised page:", href);
+      log("INIT", `Page not matched: ${href}`);
     }
   }
 
