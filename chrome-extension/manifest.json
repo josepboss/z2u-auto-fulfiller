@@ -23,8 +23,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://z2u.com/sellOrder/*",
-        "https://www.z2u.com/sellOrder/*"
+        "https://z2u.com/sellOrder*",
+        "https://www.z2u.com/sellOrder*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

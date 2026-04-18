@@ -1,3 +1,10 @@
+document.getElementById("clearBtn").addEventListener("click", async () => {
+  await chrome.storage.local.remove(["processed", "pendingOrderId", "pendingTitle"]);
+  const el = document.getElementById("clearMsg");
+  el.textContent = "History cleared — orders can be reprocessed.";
+  setTimeout(() => (el.textContent = ""), 3000);
+});
+
 document.addEventListener("DOMContentLoaded", async () => {
   const { serverUrl } = await chrome.storage.local.get("serverUrl");
   const url = serverUrl || "http://localhost:3000";

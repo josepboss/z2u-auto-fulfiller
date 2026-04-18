@@ -192,11 +192,11 @@
 
   // ══════════════════════════════════════════════════════════════════════════
   //  DETAIL PAGE  (z2u.com/sellOrder?order_id=Z...)
-  //  – Runs the full PREPARING → START TRADING → CONFIRM → upload flow
+  //  – Self-contained: reads title & quantity from the page itself.
+  //  – No stored-context dependency, so it works regardless of how you arrived.
   // ══════════════════════════════════════════════════════════════════════════
 
   async function runDetailPage() {
-    // Extract orderId from URL
     const params = new URLSearchParams(window.location.search);
     const orderId = params.get("order_id") || params.get("orderId");
 
@@ -207,68 +207,132 @@
       return;
     }
 
-    // Read pending info set by list page (title + orderId)
-    const stored = await chrome.storage.local.get(["pendingOrderId", "pendingTitle"]);
-    const title = (stored.pendingOrderId === orderId) ? stored.pendingTitle : null;
+    // ── Guard: must be NEW ORDER status ─────────────────────────────────────
+    // Give the page a moment to fully render
+    await sleep(1000);
+    const pageText = document.body.textContent || "";
+    if (!pageText.toUpperCase().includes("NEW ORDER")) {
+      console.log(`[Z2U] Order ${orderId} is not in NEW ORDER state — skipping.`);
+      return;
+    }
 
+    // ── Extract title from the detail page directly ──────────────────────────
+    // The page has a row: "Product Title : <title text>"
+    // Try multiple approaches to find it.
+    let title = "";
+
+    // Approach 1: look for a label cell containing "Product Title" and read its sibling/next element
+    const allPageElements = Array.from(document.querySelectorAll("*"));
+    for (const el of allPageElements) {
+      const t = el.childElementCount === 0 ? el.textContent?.trim() : "";
+      if (t && /^product\s*title$/i.test(t)) {
+        // Next sibling or parent's next child
+        const sibling = el.nextElementSibling || el.parentElement?.nextElementSibling;
+        if (sibling) { title = sibling.textContent?.trim() || ""; break; }
+      }
+    }
+
+    // Approach 2: look inside a dl/table structure
     if (!title) {
-      console.log(`[Z2U] No pending context for ${orderId} — not triggered by automation.`);
+      const rows = document.querySelectorAll("tr, dl dt, .info-row, .detail-row");
+      for (const row of rows) {
+        if ((row.textContent || "").toLowerCase().includes("product title")) {
+          const nextEl = row.nextElementSibling || row.querySelector("td:nth-child(2), dd");
+          title = nextEl?.textContent?.trim() || "";
+          if (title) break;
+        }
+      }
+    }
+
+    console.log(`[Z2U] 📄 Title from page: "${title.slice(0, 80)}..."`);
+
+    // ── Check mapping ────────────────────────────────────────────────────────
+    const mappings = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "GET_MAPPINGS" }, (r) =>
+        resolve(r?.mappings || {})
+      );
+    });
+
+    if (!mappings[title]) {
+      console.log(`[Z2U] ℹ️ No mapping for: "${title}"`);
+      console.log("[Z2U] ℹ️ Available mappings:", Object.keys(mappings));
+      // Clear pending so list page can retry
+      await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
       return;
     }
 
-    if (sessionDone.has(orderId)) return;
+    // ── Dedup (session only — persistent mark happens only on success) ────────
+    if (sessionDone.has(orderId)) {
+      console.log(`[Z2U] Order ${orderId} already in progress this session.`);
+      return;
+    }
     if (await bgIsProcessed(orderId)) {
-      console.log(`[Z2U] Order ${orderId} already processed.`);
+      console.log(`[Z2U] Order ${orderId} already completed (persistent).`);
       return;
     }
-
-    // Reserve immediately
     sessionDone.add(orderId);
-    await bgMarkProcessed(orderId);
-    // Clear pending so this won't retrigger
+
+    // Clear the pending context now that we've picked it up
     await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
 
-    console.log(`[Z2U] 🚀 Starting fulfillment | orderId=${orderId} | title="${title.slice(0,50)}..."`);
+    // ── Extract quantity ─────────────────────────────────────────────────────
+    let quantity = 1;
+    const allNodes = Array.from(document.querySelectorAll("*"));
+    for (let j = 0; j < allNodes.length; j++) {
+      const t = allNodes[j].childElementCount === 0 ? allNodes[j].textContent?.trim() : "";
+      if (t && /^quantity$/i.test(t)) {
+        const next = allNodes[j].nextElementSibling || allNodes[j].parentElement?.nextElementSibling;
+        const val = parseInt(next?.textContent?.trim() || "0", 10);
+        if (val > 0) { quantity = val; break; }
+      }
+    }
+    console.log(`[Z2U] Quantity: ${quantity}`);
+
+    console.log(`[Z2U] 🚀 Starting fulfillment | orderId=${orderId} | qty=${quantity}`);
 
     try {
       // ── Step 1: Click PREPARING ──────────────────────────────────────────
-      const preparingBtn = await waitForElementByText("button", "PREPARING", 8000);
-      if (!clickBtn(preparingBtn, "PREPARING")) return;
+      // The button is rendered as <button>PREPARING</button> (red button)
+      const preparingBtn =
+        await waitForElementByText("button, a", "PREPARING", 8000);
+      if (!clickBtn(preparingBtn, "PREPARING")) {
+        console.error("[Z2U] ❌ PREPARING button not found. Page buttons:", 
+          Array.from(document.querySelectorAll("button")).map(b => b.textContent?.trim()));
+        return;
+      }
       await sleep(3000);
 
       // ── Step 2: Click START TRADING ──────────────────────────────────────
-      const startTradingBtn = await waitForElementByText("button", "START TRADING", 10000);
-      if (!clickBtn(startTradingBtn, "START TRADING")) return;
+      const startTradingBtn =
+        await waitForElementByText("button, a", "START TRADING", 10000);
+      if (!clickBtn(startTradingBtn, "START TRADING")) {
+        console.error("[Z2U] ❌ START TRADING button not found.");
+        return;
+      }
       await sleep(2500);
 
-      // ── Step 3: Confirm modal — "Whether to confirm?" → CONFIRM ─────────
-      const confirmBtn = await waitForElementByText(
-        "button", "CONFIRM", 8000
-      );
-      if (confirmBtn) {
-        // Make sure we click the green CONFIRM, not CANCEL
-        // CONFIRM is usually the last / rightmost button in the modal
-        const allBtns = Array.from(document.querySelectorAll("button")).filter(
-          (b) => b.textContent?.trim().toUpperCase() === "CONFIRM"
-        );
-        const greenBtn = allBtns[allBtns.length - 1] || confirmBtn;
-        clickBtn(greenBtn, "CONFIRM (modal)");
-        await sleep(3000);
-      }
-
-      // ── Step 4: Extract quantity from the page ───────────────────────────
-      let quantity = 1;
-      // Look for a row labelled "QUANTITY" in the order info table
-      const allCells = Array.from(document.querySelectorAll("td, th, dt, dd, [class*='label'], [class*='value']"));
-      for (let j = 0; j < allCells.length; j++) {
-        if ((allCells[j].textContent || "").trim().toUpperCase() === "QUANTITY") {
-          const val = parseInt(allCells[j + 1]?.textContent?.trim() || "0", 10);
-          if (val > 0) { quantity = val; break; }
+      // ── Step 3: Confirm modal ────────────────────────────────────────────
+      // Modal has CANCEL (red) and CONFIRM (green) — we want CONFIRM
+      const allConfirmBtns = await (async () => {
+        const end = Date.now() + 8000;
+        while (Date.now() < end) {
+          const btns = Array.from(document.querySelectorAll("button")).filter(
+            (b) => b.textContent?.trim().toUpperCase() === "CONFIRM"
+          );
+          if (btns.length) return btns;
+          await sleep(400);
         }
+        return [];
+      })();
+      if (allConfirmBtns.length) {
+        // Pick the last CONFIRM (green one, not cancel)
+        clickBtn(allConfirmBtns[allConfirmBtns.length - 1], "CONFIRM (modal)");
+        await sleep(3000);
+      } else {
+        console.warn("[Z2U] ⚠️ Confirm modal not found — continuing anyway.");
       }
-      console.log(`[Z2U] Quantity: ${quantity}`);
 
-      // ── Step 5: Download template ────────────────────────────────────────
+      // ── Step 4: Download template ────────────────────────────────────────
       const templateLink = document.querySelector(
         'a[href*="template"], a[href*=".xlsx"], a[download]'
       );
@@ -279,7 +343,7 @@
       const templateUrl = templateLink.getAttribute("href");
       const templateBlob = await downloadBlob(templateUrl);
 
-      // ── Step 6: Send to backend ──────────────────────────────────────────
+      // ── Step 5: Send to backend ──────────────────────────────────────────
       const response = await sendToBackend({
         orderId,
         title,
@@ -298,10 +362,12 @@
 
       const filledBytes = response.result.filledFile;
 
-      // ── Step 7: Upload and confirm delivered ─────────────────────────────
+      // ── Step 6: Upload + confirm delivered ───────────────────────────────
       const uploaded = await uploadAndConfirm(filledBytes);
       if (uploaded) {
-        console.log(`[Z2U] ✅ Order ${orderId} fully completed.`);
+        // Mark as processed ONLY after successful delivery
+        await bgMarkProcessed(orderId);
+        console.log(`[Z2U] ✅ Order ${orderId} fully completed and marked as processed.`);
       }
     } catch (err) {
       console.error(`[Z2U] ❌ Error on order ${orderId}:`, err);
