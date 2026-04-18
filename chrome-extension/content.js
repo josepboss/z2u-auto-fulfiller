@@ -529,14 +529,21 @@
     } catch (e) {
       err("DETAIL", `Unhandled exception:`, e);
     }
+
+    // ── Return to list page to pick up next order ─────────────────────────
+    log("DETAIL", "↩ Returning to order list in 3s to process next order…");
+    await sleep(3000);
+    window.location.href = "/sellOrder/index";
   }
 
   // ── Entry point ────────────────────────────────────────────────────────────
 
   function init() {
     if (isListPage) {
-      log("INIT", "▶ Running on LIST page.");
+      log("INIT", "▶ Running on LIST page. Will scan every 30s.");
+      // Initial scan after page load, then poll every 30 seconds
       setTimeout(runListPage, 2500);
+      setInterval(runListPage, 30000);
     } else if (isDetailPage) {
       log("INIT", "▶ Running on DETAIL page.");
       setTimeout(runDetailPage, 2500);
