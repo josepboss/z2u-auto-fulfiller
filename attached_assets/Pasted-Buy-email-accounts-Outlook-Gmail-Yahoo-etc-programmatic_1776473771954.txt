@@ -1,0 +1,112 @@
+Buy email accounts (Outlook, Gmail, Yahoo, etc.) programmatically. All requests are HTTP POST with JSON body.
+
+Uses the same key as the SMM API.
+
+Emails API Endpoint
+
+POST https://lfollowers.com/api/v2
+
+POST
+action="products"
+Get a list of all available email/account products with current stock and pricing
+
+Example Request:
+
+Copy
+{
+  "key": "lfapi-5d45238b-6fe3-4d0b-6be0aadd899d",
+  "action": "products"
+}
+Example Response:
+
+[
+  {
+    "product_id": "12345",
+    "name": "Outlook.com Accounts",
+    "description": "Fresh outlook accounts",
+    "quantity": 500,
+    "price": "0.0650"
+  },
+  {
+    "product_id": "67890",
+    "name": "Gmail Accounts",
+    "description": "PVA Gmail accounts",
+    "quantity": 200,
+    "price": "0.1200"
+  }
+]
+POST
+action="purchase"
+Purchase email accounts. Returns the delivered credentials immediately
+
+Parameters:
+
+Name	Type	Required	Description
+product_id	string	✅	Product ID from the products list
+quantity	number	✅	Number of accounts to buy
+Example Request:
+
+Copy
+{
+  "key": "lfapi-5d45238b-6fe3-4d0b-6be0aadd899d",
+  "action": "purchase",
+  "product_id": "12345",
+  "quantity": 5
+}
+Example Response:
+
+{
+  "order_id": "uuid-here",
+  "product_id": "12345",
+  "quantity": 5,
+  "charge": "0.3250",
+  "delivered_data": "email1@outlook.com|pass1\nemail2@outlook.com|pass2\n..."
+}
+POST
+action="status"
+Get details of an email order by its ID
+
+Parameters:
+
+Name	Type	Required	Description
+order_id	string	✅	Order UUID returned from the purchase action
+Example Request:
+
+Copy
+{
+  "key": "lfapi-5d45238b-6fe3-4d0b-6be0aadd899d",
+  "action": "status",
+  "order_id": "uuid-here"
+}
+Example Response:
+
+{
+  "order_id": "uuid-here",
+  "product": "Outlook.com Accounts",
+  "quantity": 5,
+  "charge": "0.3250",
+  "status": "completed",
+  "delivered_data": "email1@outlook.com|pass1\n...",
+  "created_at": "2026-03-24T10:00:00Z"
+}
+POST
+action="balance"
+Get your account balance
+
+Example Request:
+
+Copy
+{
+  "key": "lfapi-5d45238b-6fe3-4d0b-6be0aadd899d",
+  "action": "balance"
+}
+Example Response:
+
+{ "balance": "100.0000", "currency": "USD" }
+Error Handling
+All errors return a JSON object with an error field:
+
+{ "error": "Invalid API key" }
+{ "error": "Insufficient balance" }
+{ "error": "Invalid product_id or quantity" }
+{ "error": "Product not found" }

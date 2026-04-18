@@ -55,31 +55,41 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
       return;
     }
 
+    const qty = parseInt(quantity, 10);
+
     logger.info(
-      { title, productId, quantity, orderId },
-      "Processing order from Z2U"
+      { title, productId, quantity: qty, orderId },
+      "Purchasing accounts from Lfollowers"
     );
 
     const key = getApiKey();
-    const lfResponse = await axios.post(LFOLLOWERS_API_URL, null, {
-      params: { key, action: "products" },
+    const lfResponse = await axios.post(LFOLLOWERS_API_URL, {
+      key,
+      action: "purchase",
+      product_id: productId,
+      quantity: qty,
     });
 
-    const products: Array<{ product_id: string; email?: string }> =
-      lfResponse.data;
+    const purchaseResult = lfResponse.data as {
+      order_id?: string;
+      product_id?: string;
+      quantity?: number;
+      charge?: string;
+      delivered_data?: string;
+      error?: string;
+    };
 
-    const matchedProduct = Array.isArray(products)
-      ? products.find((p) => String(p.product_id) === String(productId))
-      : null;
-
-    const qty = parseInt(quantity, 10);
-    const emails: string[] = [];
-
-    if (matchedProduct && "email" in matchedProduct) {
-      for (let i = 0; i < qty; i++) {
-        emails.push((matchedProduct as { email: string }).email);
-      }
+    if (purchaseResult.error) {
+      logger.error({ error: purchaseResult.error }, "Lfollowers purchase error");
+      res.status(502).json({ error: `Lfollowers error: ${purchaseResult.error}` });
+      return;
     }
+
+    const deliveredData = purchaseResult.delivered_data ?? "";
+    const accountLines = deliveredData
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
 
     const workbook = new ExcelJS.Workbook();
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -96,9 +106,11 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
     const startRow = headerRow.getCell(1).value ? 2 : 1;
 
     for (let i = 0; i < qty; i++) {
+      const line = accountLines[i] ?? `account_${orderId ?? "unknown"}_${i + 1}`;
+      const [email, password] = line.split("|");
       const row = worksheet.getRow(startRow + i);
-      row.getCell(1).value = emails[i] ?? `account_${orderId ?? "unknown"}_${i + 1}`;
-      row.getCell(2).value = productId;
+      row.getCell(1).value = email ?? line;
+      row.getCell(2).value = password ?? "";
       row.commit();
     }
 

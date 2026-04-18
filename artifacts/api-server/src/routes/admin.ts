@@ -92,7 +92,7 @@ async function loadServices() {
       data.data.forEach(s => {
         const o = document.createElement('option');
         o.value = s.product_id;
-        o.textContent = \`[\${s.product_id}] \${s.name} | \${s.category}\`;
+        o.textContent = \`[\${s.product_id}] \${s.name} | Stock: \${s.quantity} | $\${s.price}\`;
         sel.appendChild(o);
       });
     }

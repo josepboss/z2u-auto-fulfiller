@@ -15,8 +15,9 @@ function getApiKey(): string {
 router.get("/admin/services", async (_req, res) => {
   try {
     const key = getApiKey();
-    const response = await axios.post(LFOLLOWERS_API_URL, null, {
-      params: { key, action: "products" },
+    const response = await axios.post(LFOLLOWERS_API_URL, {
+      key,
+      action: "products",
     });
     res.json({ data: response.data });
   } catch (err) {
@@ -26,24 +27,40 @@ router.get("/admin/services", async (_req, res) => {
 });
 
 router.post("/order", async (req, res) => {
-  const { product_id, link, quantity } = req.body as {
+  const { product_id, quantity } = req.body as {
     product_id: string;
-    link: string;
     quantity: number;
   };
-  if (!product_id || !link || !quantity) {
-    res.status(400).json({ error: "product_id, link, and quantity are required" });
+  if (!product_id || !quantity) {
+    res.status(400).json({ error: "product_id and quantity are required" });
     return;
   }
   try {
     const key = getApiKey();
-    const response = await axios.post(LFOLLOWERS_API_URL, null, {
-      params: { key, action: "add", product_id, link, quantity },
+    const response = await axios.post(LFOLLOWERS_API_URL, {
+      key,
+      action: "purchase",
+      product_id,
+      quantity,
     });
     res.json({ data: response.data });
   } catch (err) {
     logger.error({ err }, "Failed to place lfollowers order");
     res.status(500).json({ error: "Failed to place order" });
+  }
+});
+
+router.get("/balance", async (_req, res) => {
+  try {
+    const key = getApiKey();
+    const response = await axios.post(LFOLLOWERS_API_URL, {
+      key,
+      action: "balance",
+    });
+    res.json({ data: response.data });
+  } catch (err) {
+    logger.error({ err }, "Failed to fetch lfollowers balance");
+    res.status(500).json({ error: "Failed to fetch balance" });
   }
 });
 
