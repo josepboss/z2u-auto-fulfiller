@@ -13,6 +13,31 @@ const __dirname = path.dirname(__filename);
 const MAPPINGS_FILE = path.resolve(__dirname, "../../mappings.json");
 const LFOLLOWERS_API_URL = "https://lfollowers.com/api/v2";
 
+// ── Order cache — filled XLSX files stored by orderId ─────────────────────────
+// Prevents calling the Lfollowers API more than once per order (each call costs money).
+const CACHE_DIR = path.resolve(__dirname, "../../order-cache");
+if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+
+function cacheFilePath(orderId: string): string {
+  // Sanitise orderId to safe filename characters
+  const safe = orderId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(CACHE_DIR, `${safe}.xlsx`);
+}
+
+function getCachedFile(orderId: string): Buffer | null {
+  const p = cacheFilePath(orderId);
+  if (fs.existsSync(p)) {
+    logger.info({ orderId }, "Order cache HIT — returning cached filled file (no API call)");
+    return fs.readFileSync(p);
+  }
+  return null;
+}
+
+function saveCachedFile(orderId: string, buf: Buffer): void {
+  fs.writeFileSync(cacheFilePath(orderId), buf);
+  logger.info({ orderId, bytes: buf.length }, "Order cache SAVED");
+}
+
 function loadMappings(): Record<string, string> {
   if (!fs.existsSync(MAPPINGS_FILE)) return {};
   return JSON.parse(fs.readFileSync(MAPPINGS_FILE, "utf-8"));
@@ -44,23 +69,33 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
       res.status(400).json({ error: "file is required" });
       return;
     }
+    if (!orderId) {
+      res.status(400).json({ error: "orderId is required" });
+      return;
+    }
 
+    // ── Cache check — if we already processed this order, return cached file ──
+    const cached = getCachedFile(orderId);
+    if (cached) {
+      const fileName = `order_${orderId}_filled.xlsx`;
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+      res.send(cached);
+      return;
+    }
+
+    // ── New order — call Lfollowers API ───────────────────────────────────────
     const mappings = loadMappings();
     const productId = mappings[title];
 
     if (!productId) {
-      res
-        .status(404)
-        .json({ error: `No mapping found for title: "${title}"` });
+      res.status(404).json({ error: `No mapping found for title: "${title}"` });
       return;
     }
 
     const qty = parseInt(quantity, 10);
 
-    logger.info(
-      { title, productId, quantity: qty, orderId },
-      "Purchasing accounts from Lfollowers"
-    );
+    logger.info({ title, productId, quantity: qty, orderId }, "Purchasing accounts from Lfollowers");
 
     const key = getApiKey();
     const lfResponse = await axios.post(LFOLLOWERS_API_URL, {
@@ -91,6 +126,7 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
       .map((line) => line.trim())
       .filter(Boolean);
 
+    // ── Fill the XLSX template ─────────────────────────────────────────────────
     const workbook = new ExcelJS.Workbook();
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore — ExcelJS types mismatch with Node 24 Buffer but works at runtime
@@ -106,7 +142,7 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
     const startRow = headerRow.getCell(1).value ? 2 : 1;
 
     for (let i = 0; i < qty; i++) {
-      const line = accountLines[i] ?? `account_${orderId ?? "unknown"}_${i + 1}`;
+      const line = accountLines[i] ?? `account_${orderId}_${i + 1}`;
       const [email, password] = line.split("|");
       const row = worksheet.getRow(startRow + i);
       row.getCell(1).value = email ?? line;
@@ -114,20 +150,43 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
       row.commit();
     }
 
-    const outputBuffer = await workbook.xlsx.writeBuffer();
+    const outputBuffer = Buffer.from(await workbook.xlsx.writeBuffer());
 
-    const fileName = `order_${orderId ?? Date.now()}_filled.xlsx`;
+    // ── Save to cache before responding ───────────────────────────────────────
+    saveCachedFile(orderId, outputBuffer);
 
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
+    const fileName = `order_${orderId}_filled.xlsx`;
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
-    res.send(Buffer.from(outputBuffer));
+    res.send(outputBuffer);
+
   } catch (err) {
     logger.error({ err }, "process-order failed");
     res.status(500).json({ error: "Internal server error" });
   }
+});
+
+// ── Cache management endpoints ────────────────────────────────────────────────
+
+router.get("/order-cache", (_req, res) => {
+  const files = fs.existsSync(CACHE_DIR) ? fs.readdirSync(CACHE_DIR) : [];
+  res.json({ count: files.length, orders: files.map((f) => f.replace(".xlsx", "")) });
+});
+
+router.delete("/order-cache/:orderId", (req, res) => {
+  const p = cacheFilePath(req.params.orderId);
+  if (fs.existsSync(p)) {
+    fs.unlinkSync(p);
+    res.json({ ok: true, message: `Cache cleared for ${req.params.orderId}` });
+  } else {
+    res.status(404).json({ error: "Not in cache" });
+  }
+});
+
+router.delete("/order-cache", (_req, res) => {
+  const files = fs.existsSync(CACHE_DIR) ? fs.readdirSync(CACHE_DIR) : [];
+  files.forEach((f) => fs.unlinkSync(path.join(CACHE_DIR, f)));
+  res.json({ ok: true, message: `Cleared ${files.length} cached orders` });
 });
 
 export default router;
