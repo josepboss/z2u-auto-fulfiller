@@ -125,9 +125,7 @@ async function handleOrderProcessing(orderData) {
 
   const arrayBuffer = await res.arrayBuffer();
 
-  // Mark as processed in persistent storage
-  processedSet.add(orderId);
-  await chrome.storage.local.set({ processed: Array.from(processedSet) });
-
+  // NOTE: Do NOT mark as processed here — content.js does that ONLY after
+  // the filled file is successfully uploaded and Z2U confirms delivery.
   return { filledFile: Array.from(new Uint8Array(arrayBuffer)) };
 }

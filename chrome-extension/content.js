@@ -113,39 +113,13 @@
 
   // ── Upload filled file ─────────────────────────────────────────────────────
 
-  async function uploadAndConfirm(filledBytes) {
-    const file = new File([new Uint8Array(filledBytes)], "fulfilled_order.xlsx", {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-
-    // ── Step A: Click "Upload Form" button to open/activate the file input ──
-    const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 6000);
-    if (uploadFormBtn) {
-      log("UPLOAD", `[A] Clicking "Upload Form" button to activate file input…`);
-      uploadFormBtn.click();
-      await sleep(1500);
-    } else {
-      log("UPLOAD", `[A] No "Upload Form" button found — assuming file input is already visible.`);
-    }
-
-    // ── Step B: Find file input and inject file ──────────────────────────────
-    log("UPLOAD", `[B] Looking for file input (timeout 8s)…`);
-    const input = await waitForSelector('input[type="file"]', 8000);
-    if (!input) {
-      err("UPLOAD", "[B] File input not found after 8s.");
-      return false;
-    }
-    log("UPLOAD", `[B] File input found: ${input.outerHTML.slice(0, 150)}`);
-
-    // Inject using DataTransfer and fire both input + change events
-    // (covers both native DOM and React's synthetic event system)
+  function injectFileIntoInput(input, file) {
     const dt = new DataTransfer();
     dt.items.add(file);
-
-    // Try native property descriptor first (React-compatible)
-    const nativeFileDesc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "files");
-    if (nativeFileDesc && nativeFileDesc.set) {
-      nativeFileDesc.set.call(input, dt.files);
+    // Try native files setter first (React-compatible)
+    const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "files");
+    if (desc && desc.set) {
+      desc.set.call(input, dt.files);
       log("UPLOAD", `[B] Injected via native files setter.`);
     } else {
       Object.defineProperty(input, "files", { value: dt.files, configurable: true });
@@ -153,23 +127,73 @@
     }
     input.dispatchEvent(new Event("input",  { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
-    log("UPLOAD", `[B] File injected (${filledBytes.length} bytes). Waiting 2s for upload to process…`);
-    await sleep(2000);
+  }
 
-    // ── Step C: Look for an explicit Upload/Submit button after file selection ─
-    const submitUploadBtn =
-      await waitForElementByText("button, a", "upload", 4000);
-    if (submitUploadBtn && !/upload form/i.test(submitUploadBtn.textContent || "")) {
-      log("UPLOAD", `[C] Found upload submit button: "${submitUploadBtn.textContent?.trim()}" — clicking…`);
-      submitUploadBtn.click();
-      await sleep(2000);
-    } else {
-      log("UPLOAD", `[C] No separate upload submit button — proceeding to Confirm Delivered.`);
+  // Find file input that accepts spreadsheets (not images/screenshots)
+  function findXlsxInput() {
+    const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+    log("UPLOAD", `[B] All file inputs on page: ${inputs.map(i => `accept="${i.accept}" name="${i.name}" id="${i.id}"`).join(" | ")}`);
+    // Prefer one explicitly accepting xlsx/spreadsheet/csv
+    const xlsx = inputs.find((i) => /xlsx|spreadsheet|csv|xls/i.test(i.accept || ""));
+    if (xlsx) return xlsx;
+    // Avoid image-only inputs
+    const nonImage = inputs.find((i) => !/^image/i.test(i.accept || ""));
+    if (nonImage) return nonImage;
+    // Last resort: first input
+    return inputs[0] || null;
+  }
+
+  async function uploadAndConfirm(filledBytes) {
+    const file = new File([new Uint8Array(filledBytes)], "fulfilled_order.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+
+    // ── Step A: Close any accidentally open modals (Escape key) ─────────────
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await sleep(500);
+
+    // ── Step B: Inject into xlsx file input (may be hidden — search all) ────
+    log("UPLOAD", `[B] Scanning for xlsx file input before clicking Upload Form…`);
+    let input = findXlsxInput();
+
+    if (!input) {
+      // Input not yet in DOM — click "Upload Form" to reveal it
+      const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 6000);
+      if (!uploadFormBtn) {
+        err("UPLOAD", "[B] 'Upload Form' button not found.");
+        return false;
+      }
+      log("UPLOAD", `[B] Clicking "Upload Form" to reveal file input…`);
+      uploadFormBtn.click();
+      await sleep(1000);
+      input = await (async () => {
+        const end = Date.now() + 6000;
+        while (Date.now() < end) {
+          const found = findXlsxInput();
+          if (found) return found;
+          await sleep(300);
+        }
+        return null;
+      })();
     }
 
+    if (!input) {
+      err("UPLOAD", "[B] File input not found after 6s.");
+      return false;
+    }
+    log("UPLOAD", `[B] Using input: accept="${input.accept}" id="${input.id}" name="${input.name}"`);
+
+    injectFileIntoInput(input, file);
+    log("UPLOAD", `[B] File injected (${filledBytes.length} bytes). Waiting 3s for Z2U to process…`);
+    await sleep(3000);
+
+    // ── Step C: Close any modal that opened (Escape) ─────────────────────────
+    // (handles case where clicking Upload Form opened a screenshot modal instead)
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await sleep(500);
     dumpButtons("UPLOAD-BEFORE-CONFIRM");
 
-    // ── Step D: Click Confirm Delivered ─────────────────────────────────────
+    // ── Step D: Click Confirm Delivered ──────────────────────────────────────
     log("UPLOAD", `[D] Looking for Confirm Delivered button…`);
     const confirmDeliveredBtn =
       await waitForElementByText("button, a", "confirm delivered", 8000) ||
@@ -184,28 +208,28 @@
     confirmDeliveredBtn.click();
     await sleep(3000);
 
-    // ── Step E: Verify success — page should no longer show Confirm Delivered ─
+    // ── Step E: Verify Z2U accepted — Confirm Delivered button should vanish ─
     const stillThere = Array.from(document.querySelectorAll("button, a"))
       .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
     if (!stillThere) {
-      log("UPLOAD", `[E] ✅ Confirm Delivered button gone — delivery confirmed by Z2U.`);
+      log("UPLOAD", `[E] ✅ Confirm Delivered gone — delivery accepted by Z2U.`);
       return true;
     }
-    // Button still present — may need a second confirmation click (Z2U sometimes shows a modal)
-    log("UPLOAD", `[E] Confirm Delivered still visible — checking for confirmation modal…`);
-    const modalConfirm = await waitForElementByText("button", "confirm", 5000);
+    // Still there — check for a confirmation modal
+    log("UPLOAD", `[E] Confirm Delivered still visible — looking for modal confirm button…`);
+    const modalConfirm = await waitForElementByText("button", "confirm", 4000);
     if (modalConfirm) {
-      log("UPLOAD", `[E] Found modal confirm button — clicking…`);
+      log("UPLOAD", `[E] Clicking modal confirm: "${modalConfirm.textContent?.trim()}"`);
       modalConfirm.click();
       await sleep(2000);
-      const stillThereAgain = Array.from(document.querySelectorAll("button, a"))
+      const gone = !Array.from(document.querySelectorAll("button, a"))
         .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
-      if (!stillThereAgain) {
-        log("UPLOAD", `[E] ✅ Delivery confirmed after modal.`);
-        return true;
-      }
+      if (gone) { log("UPLOAD", `[E] ✅ Delivery confirmed via modal.`); return true; }
     }
-    warn("UPLOAD", `[E] Confirm Delivered still present after all attempts — marking as uncertain.`);
+    // Check for Z2U error message on page
+    const errorMsg = document.querySelector(".error, .alert, [class*='error'], [class*='alert']");
+    if (errorMsg) warn("UPLOAD", `[E] Z2U error on page: "${errorMsg.textContent?.trim()}"`);
+    warn("UPLOAD", `[E] Could not confirm delivery. Check Z2U page manually.`);
     return false;
   }
 
