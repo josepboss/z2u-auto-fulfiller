@@ -114,37 +114,98 @@
   // ── Upload filled file ─────────────────────────────────────────────────────
 
   async function uploadAndConfirm(filledBytes) {
-    log("UPLOAD", `Looking for file input (timeout 8s)…`);
+    const file = new File([new Uint8Array(filledBytes)], "fulfilled_order.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+
+    // ── Step A: Click "Upload Form" button to open/activate the file input ──
+    const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 6000);
+    if (uploadFormBtn) {
+      log("UPLOAD", `[A] Clicking "Upload Form" button to activate file input…`);
+      uploadFormBtn.click();
+      await sleep(1500);
+    } else {
+      log("UPLOAD", `[A] No "Upload Form" button found — assuming file input is already visible.`);
+    }
+
+    // ── Step B: Find file input and inject file ──────────────────────────────
+    log("UPLOAD", `[B] Looking for file input (timeout 8s)…`);
     const input = await waitForSelector('input[type="file"]', 8000);
     if (!input) {
-      err("UPLOAD", "File input not found after 8s.");
+      err("UPLOAD", "[B] File input not found after 8s.");
       return false;
     }
-    log("UPLOAD", `File input found: ${input.outerHTML.slice(0, 120)}`);
+    log("UPLOAD", `[B] File input found: ${input.outerHTML.slice(0, 150)}`);
 
+    // Inject using DataTransfer and fire both input + change events
+    // (covers both native DOM and React's synthetic event system)
     const dt = new DataTransfer();
-    dt.items.add(new File([new Uint8Array(filledBytes)], "fulfilled_order.xlsx", {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    }));
-    Object.defineProperty(input, "files", { value: dt.files, writable: false });
+    dt.items.add(file);
+
+    // Try native property descriptor first (React-compatible)
+    const nativeFileDesc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "files");
+    if (nativeFileDesc && nativeFileDesc.set) {
+      nativeFileDesc.set.call(input, dt.files);
+      log("UPLOAD", `[B] Injected via native files setter.`);
+    } else {
+      Object.defineProperty(input, "files", { value: dt.files, configurable: true });
+      log("UPLOAD", `[B] Injected via Object.defineProperty.`);
+    }
+    input.dispatchEvent(new Event("input",  { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
-    log("UPLOAD", `File attached (${filledBytes.length} bytes), waiting 2s…`);
+    log("UPLOAD", `[B] File injected (${filledBytes.length} bytes). Waiting 2s for upload to process…`);
     await sleep(2000);
 
-    log("UPLOAD", `Looking for Confirm Delivered button…`);
-    dumpButtons("UPLOAD");
+    // ── Step C: Look for an explicit Upload/Submit button after file selection ─
+    const submitUploadBtn =
+      await waitForElementByText("button, a", "upload", 4000);
+    if (submitUploadBtn && !/upload form/i.test(submitUploadBtn.textContent || "")) {
+      log("UPLOAD", `[C] Found upload submit button: "${submitUploadBtn.textContent?.trim()}" — clicking…`);
+      submitUploadBtn.click();
+      await sleep(2000);
+    } else {
+      log("UPLOAD", `[C] No separate upload submit button — proceeding to Confirm Delivered.`);
+    }
 
+    dumpButtons("UPLOAD-BEFORE-CONFIRM");
+
+    // ── Step D: Click Confirm Delivered ─────────────────────────────────────
+    log("UPLOAD", `[D] Looking for Confirm Delivered button…`);
     const confirmDeliveredBtn =
       await waitForElementByText("button, a", "confirm delivered", 8000) ||
       await waitForElementByText("button, a", "delivered", 5000);
 
-    if (confirmDeliveredBtn) {
-      confirmDeliveredBtn.click();
-      log("UPLOAD", `✅ Clicked Confirm Delivered: "${confirmDeliveredBtn.textContent?.trim()}"`);
+    if (!confirmDeliveredBtn) {
+      warn("UPLOAD", "[D] Confirm Delivered button not found.");
+      dumpButtons("UPLOAD-FAILED");
+      return false;
+    }
+    log("UPLOAD", `[D] Clicking Confirm Delivered: "${confirmDeliveredBtn.textContent?.trim()}"`);
+    confirmDeliveredBtn.click();
+    await sleep(3000);
+
+    // ── Step E: Verify success — page should no longer show Confirm Delivered ─
+    const stillThere = Array.from(document.querySelectorAll("button, a"))
+      .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
+    if (!stillThere) {
+      log("UPLOAD", `[E] ✅ Confirm Delivered button gone — delivery confirmed by Z2U.`);
       return true;
     }
-    warn("UPLOAD", "Confirm Delivered button not found after 13s.");
-    dumpButtons("UPLOAD-FAILED");
+    // Button still present — may need a second confirmation click (Z2U sometimes shows a modal)
+    log("UPLOAD", `[E] Confirm Delivered still visible — checking for confirmation modal…`);
+    const modalConfirm = await waitForElementByText("button", "confirm", 5000);
+    if (modalConfirm) {
+      log("UPLOAD", `[E] Found modal confirm button — clicking…`);
+      modalConfirm.click();
+      await sleep(2000);
+      const stillThereAgain = Array.from(document.querySelectorAll("button, a"))
+        .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
+      if (!stillThereAgain) {
+        log("UPLOAD", `[E] ✅ Delivery confirmed after modal.`);
+        return true;
+      }
+    }
+    warn("UPLOAD", `[E] Confirm Delivered still present after all attempts — marking as uncertain.`);
     return false;
   }
 
