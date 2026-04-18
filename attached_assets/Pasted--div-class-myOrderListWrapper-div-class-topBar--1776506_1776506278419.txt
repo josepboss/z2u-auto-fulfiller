@@ -1,0 +1,176 @@
+<div class="myOrderListWrapper">
+                                        <div class="topBar">
+                                            <div class="o-l-row">
+                                                <div class="o-l-col productInfo">Product</div>
+                                                <div class="o-l-col productUnit">Unit Price</div>
+                                                <div class="o-l-col productType">Type</div>
+                                                <div class="o-l-col productStatus">Status</div>
+                                                <div class="o-l-col productNotes">Internal remarks                                                    <span data-toggle="tooltip" data-placement="top" title="" data-original-title="Internal remarks are your private notes and records of the order, which are only visible to you.">
+                                                <svg class="icon icon-mark-for-usermemu" aria-hidden="true">
+                                                    <use xlink:href="#icon-010yiwen"></use>
+                                                </svg>
+                                            </span>
+                                                </div>
+                                                <div class="o-l-col productTotalPrice">Total Amount</div>
+                                            </div>
+                                        </div>
+                                                                                        <div class="orderPanel ">
+                                                    <div class="panelHead">
+                                                        <div class="items o-number">
+                                                    <span class="">
+                                                        <span class="copy-btn" style="cursor: pointer;" data-toggle="tooltip" data-placement="right" title="" data-original-title="Copy">
+                                                            <svg class="icon copytext" aria-hidden="true" data-clipboard-text="Z1144625572">
+                                                                <use xlink:href="#icon-fuzhi"></use>
+                                                            </svg>
+                                                        </span>
+                                                        Order number :
+                                                    </span>
+                                                            <span>
+                                                        <a target="_blank" href="https://www.z2u.com/sellOrder?order_id=Z1144625572">Z1144625572</a>
+                                                                                                                    <span class="neworder"> NEW</span>
+                                                                                                            </span>
+                                                        </div>
+                                                        <div class="items o-user">
+                                                    <span class="">
+                                                        <svg class="icon" aria-hidden="true">
+                                                            <use xlink:href="#icon-yonghu"></use>
+                                                        </svg>
+                                                        buyer :
+                                                    </span>
+                                                            beepimajeep                                                            <a class="order-product-list-chat" target="_blank" href="https://www.z2u.com/Chat?chat_id=UElyN2o1b2hLdTNoSkFaYkNJNzVEQT09&amp;identity=1">
+                                                                <svg class="icon" aria-hidden="true">
+                                                                    <use xlink:href="#icon-chat2"></use>
+                                                                </svg>
+                                                            </a>
+                                                        </div>
+                                                        <div class="items o-date">
+                                                    <span class="">
+                                                        <svg class="icon" aria-hidden="true">
+                                                            <use xlink:href="#icon-rili1"></use>
+                                                        </svg>
+                                                        Date:
+                                                    </span>
+                                                            2026-04-18 17:42:55                                                        </div>
+                                                        <div class="items o-tips">
+                                                            <div class="tips-text">
+                                                                                                                            </div>
+                                                        </div>
+                                                        <div class="items o-flag">
+                                                                                                                    </div>
+                                                        <div class="items">
+                                                                                                                    </div>
+                                                    </div>
+                                                    <div class="panelBody">
+                                                        <div class="o-l-row">
+                                                            <div class="o-l-col productInfo">
+                                                                                                                                    <a target="_blank" href="https://www.z2u.com/Order/showProRecord?oid=1a6fa3b86772f1da67e362bcfc25523b4dacecb04325ac857aaef511093f0e2d">
+                                                                        Telegram members / subscribers 💎 High Quality 🎉 Channel / group 💎                                                                    </a>
+                                                                                                                            </div>
+                                                            <div class="o-l-col productUnit">USD 0.0015</div>
+                                                            <div class="o-l-col productType">
+                                                                <div class="iconBox">
+                                                                    <img src="https://www.z2u.com/upload/platform/20240402/6e0bec7c0a3875d05d74f43d3baf5e88.png" alt="Boosting" title="Boosting">
+                                                                </div>
+                                                            </div>
+                                                            <div class="o-l-col productStatus">
+                                                                <ul class="smList">
+                                                                    <li>
+                                                                        <div class="smLabel dangerLabel">NEW ORDER</div>  <!-- successLabel dangerLabel  warningLabel -->
+                                                                    </li>
+                                                                                                                                        <li>
+                                                                        <a target="_blank" href="https://www.z2u.com/sellOrder?order_id=Z1144625572">Order Detail</a>
+                                                                    </li>
+                                                                </ul>
+                                                            </div>
+                                                            <div class="o-l-col productNotes">
+                                                                <span></span>
+                                                            </div>
+                                                            <div class="o-l-col productTotalPrice">
+                                                                <span class="thisTitle">Total Amount:</span>
+                                                                <span>USD 1.64</span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                                                            <div class="orderPanel ">
+                                                    <div class="panelHead">
+                                                        <div class="items o-number">
+                                                    <span class="">
+                                                        <span class="copy-btn" style="cursor: pointer;" data-toggle="tooltip" data-placement="right" title="" data-original-title="Copy">
+                                                            <svg class="icon copytext" aria-hidden="true" data-clipboard-text="Z5252643865">
+                                                                <use xlink:href="#icon-fuzhi"></use>
+                                                            </svg>
+                                                        </span>
+                                                        Order number :
+                                                    </span>
+                                                            <span>
+                                                        <a target="_blank" href="https://www.z2u.com/sellOrder?order_id=Z5252643865">Z5252643865</a>
+                                                                                                                    <span class="neworder"> NEW</span>
+                                                                                                            </span>
+                                                        </div>
+                                                        <div class="items o-user">
+                                                    <span class="">
+                                                        <svg class="icon" aria-hidden="true">
+                                                            <use xlink:href="#icon-yonghu"></use>
+                                                        </svg>
+                                                        buyer :
+                                                    </span>
+                                                            zakdsr2                                                            <a class="order-product-list-chat" target="_blank" href="https://www.z2u.com/Chat?chat_id=TG9iVTVMZEFNWWlTMnVaYTVMUDh5UT09&amp;identity=1">
+                                                                <svg class="icon" aria-hidden="true">
+                                                                    <use xlink:href="#icon-chat2"></use>
+                                                                </svg>
+                                                            </a>
+                                                        </div>
+                                                        <div class="items o-date">
+                                                    <span class="">
+                                                        <svg class="icon" aria-hidden="true">
+                                                            <use xlink:href="#icon-rili1"></use>
+                                                        </svg>
+                                                        Date:
+                                                    </span>
+                                                            2026-04-18 13:06:34                                                        </div>
+                                                        <div class="items o-tips">
+                                                            <div class="tips-text">
+                                                                                                                                        <svg class="icon" aria-hidden="true">
+                                                                            <use xlink:href="#icon-jurassic_warn"></use>
+                                                                        </svg>
+                                                                        Exceeded the promised delivery time for 4.37 hours                                                            </div>
+                                                        </div>
+                                                        <div class="items o-flag">
+                                                                                                                    </div>
+                                                        <div class="items">
+                                                                                                                    </div>
+                                                    </div>
+                                                    <div class="panelBody">
+                                                        <div class="o-l-row">
+                                                            <div class="o-l-col productInfo">
+                                                                                                                                    <a target="_blank" href="https://www.z2u.com/Order/showProRecord?oid=e8eb3abbed9ad48cd5822393cfb1f71a0b572c1babb2f08d6689bb063b80d166">
+                                                                        ⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |                                                                    </a>
+                                                                                                                            </div>
+                                                            <div class="o-l-col productUnit">USD 0.029</div>
+                                                            <div class="o-l-col productType">
+                                                                <div class="iconBox">
+                                                                    <img src="https://www.z2u.com/upload/platform/20240411/b564092d676aeccd1aea078f3c76e58c.jpg" alt="Accounts" title="Accounts">
+                                                                </div>
+                                                            </div>
+                                                            <div class="o-l-col productStatus">
+                                                                <ul class="smList">
+                                                                    <li>
+                                                                        <div class="smLabel dangerLabel">NEW ORDER</div>  <!-- successLabel dangerLabel  warningLabel -->
+                                                                    </li>
+                                                                                                                                        <li>
+                                                                        <a target="_blank" href="https://www.z2u.com/sellOrder?order_id=Z5252643865">Order Detail</a>
+                                                                    </li>
+                                                                </ul>
+                                                            </div>
+                                                            <div class="o-l-col productNotes">
+                                                                <span></span>
+                                                            </div>
+                                                            <div class="o-l-col productTotalPrice">
+                                                                <span class="thisTitle">Total Amount:</span>
+                                                                <span>USD 0.93</span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                                                </div>
