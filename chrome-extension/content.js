@@ -183,8 +183,8 @@
       const statusText  = statusBadge?.textContent?.trim().toUpperCase() || "(no status)";
       log("LIST", `Panel status: "${statusText}"`);
 
-      // Process NEW ORDER and PREPARING states (both need to reach START TRADING)
-      const isActionable = statusText.includes("NEW ORDER") || statusText.includes("PREPARING");
+      // Process NEW ORDER, PREPARING, and DELIVERING states
+      const isActionable = statusText.includes("NEW ORDER") || statusText.includes("PREPARING") || statusText.includes("DELIVERING");
       if (!isActionable) continue;
 
       // Order ID
@@ -258,16 +258,19 @@
     await sleep(1000);
 
     // ── [1] Status check ────────────────────────────────────────────────────
-    const pageText    = document.body.textContent?.toUpperCase() || "";
-    const statusBadge = document.querySelector(".smLabel.dangerLabel, .smLabel.warningLabel, .smLabel, [class*='statusLabel'], .order-status");
-    const badgeText   = statusBadge?.textContent?.trim().toUpperCase() || "not found";
-    const hasNew      = pageText.includes("NEW ORDER");
-    const hasPreparing = pageText.includes("PREPARING");
-    const isActionable = hasNew || hasPreparing;
-    log("DETAIL", `[1] Status → NEW ORDER: ${hasNew} | PREPARING: ${hasPreparing} | badge: "${badgeText}"`);
+    // Z2U order flow: NEW ORDER → PREPARING → Delivering → Waiting for confirmation → Completed
+    // We handle all states up to and including Delivering.
+    const pageText      = document.body.textContent?.toUpperCase() || "";
+    const statusBadge   = document.querySelector(".smLabel.dangerLabel, .smLabel.warningLabel, .smLabel, [class*='statusLabel'], .order-status");
+    const badgeText     = statusBadge?.textContent?.trim().toUpperCase() || "not found";
+    const hasNew        = pageText.includes("NEW ORDER");
+    const hasPreparing  = pageText.includes("PREPARING");
+    const hasDelivering = pageText.includes("DELIVERING");
+    const isActionable  = hasNew || hasPreparing || hasDelivering;
+    log("DETAIL", `[1] Status → NEW ORDER:${hasNew} | PREPARING:${hasPreparing} | DELIVERING:${hasDelivering} | badge:"${badgeText}"`);
 
     if (!isActionable) {
-      log("DETAIL", `[1] Order ${orderId} is not in an actionable state (not NEW ORDER or PREPARING) — skipping.`);
+      log("DETAIL", `[1] Order ${orderId} is not in an actionable state — skipping.`);
       return;
     }
 
@@ -380,69 +383,83 @@
     dumpButtons("DETAIL-BEFORE-PREPARING");
 
     try {
-      // ── [6] Detect current order state then advance ────────────────────────
-      // Z2U flow: PREPARING → START TRADING → (modal CONFIRM) → upload
-      // If a previous run already clicked PREPARING, the button is gone and
-      // START TRADING is already showing — skip straight to step 7.
+      // ── State machine: detect current stage and jump to the right step ─────
+      // Z2U order stages: NEW ORDER → PREPARING → Delivering → Waiting for confirmation
+      //
+      // Detect by what's visible on the page right now:
+      //   • "Download Bulk Delivery Form Template" link → already in Delivering, skip to [9]
+      //   • "START TRADING" button → PREPARING already clicked, skip to [7]
+      //   • "PREPARING" button → fresh NEW ORDER, do full flow from [6]
 
-      const immediateStartBtn = Array.from(document.querySelectorAll("button, a"))
-        .find((b) => b.textContent?.trim().toUpperCase().includes("START TRADING"));
+      const allBtnsNow = Array.from(document.querySelectorAll("button, a"));
+      const hasTemplateLink = !!document.querySelector('a[href*="template"], a[href*=".xlsx"], a[download]');
+      const hasStartTrading = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase().includes("START TRADING"));
+      const hasPrepBtn      = allBtnsNow.some((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
 
-      if (immediateStartBtn) {
-        log("DETAIL", "[6] START TRADING already visible → order is past PREPARING state. Skipping PREPARING click.");
-      } else {
-        log("DETAIL", "[6] Waiting for PREPARING button (8s)…");
-        const preparingBtn = await waitForElementByText("button, a", "PREPARING", 8000);
-        if (!preparingBtn) {
-          err("DETAIL", "[6] PREPARING button not found after 8s.");
-          dumpButtons("DETAIL-[6]-FAILED");
+      log("DETAIL", `[6] Page state → hasTemplateLink:${hasTemplateLink} | hasStartTrading:${hasStartTrading} | hasPrepBtn:${hasPrepBtn}`);
+      dumpButtons("DETAIL-STATE-CHECK");
+
+      if (!hasTemplateLink) {
+        // Need to advance through PREPARING and/or START TRADING first
+
+        if (!hasStartTrading) {
+          // ── [6] Click PREPARING ──────────────────────────────────────────────
+          if (!hasPrepBtn) {
+            err("DETAIL", "[6] Neither PREPARING nor START TRADING nor template link found.");
+            dumpButtons("DETAIL-[6]-STUCK");
+            return;
+          }
+          const preparingBtn = allBtnsNow.find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
+          log("DETAIL", `[6] Clicking PREPARING: tag=${preparingBtn.tagName} class="${preparingBtn.className}"`);
+          preparingBtn.click();
+          log("DETAIL", "[6] ✅ Clicked PREPARING. Waiting 3s…");
+          await sleep(3000);
+        } else {
+          log("DETAIL", "[6] START TRADING already visible — skipping PREPARING.");
+        }
+
+        // ── [7] Click START TRADING ────────────────────────────────────────────
+        log("DETAIL", "[7] Waiting for START TRADING button (10s)…");
+        dumpButtons("DETAIL-BEFORE-START-TRADING");
+        const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
+        if (!startBtn) {
+          err("DETAIL", "[7] START TRADING button not found after 10s.");
+          dumpButtons("DETAIL-[7]-FAILED");
           return;
         }
-        log("DETAIL", `[6] Found PREPARING button: tag=${preparingBtn.tagName} text="${preparingBtn.textContent?.trim()}" class="${preparingBtn.className}"`);
-        preparingBtn.click();
-        log("DETAIL", "[6] ✅ Clicked PREPARING. Waiting 3s for page to update…");
-        await sleep(3000);
-      }
+        log("DETAIL", `[7] Clicking START TRADING: tag=${startBtn.tagName} text="${startBtn.textContent?.trim()}" class="${startBtn.className}"`);
+        startBtn.click();
+        log("DETAIL", "[7] ✅ Clicked START TRADING. Waiting 2.5s…");
+        await sleep(2500);
 
-      // ── [7] Click START TRADING ────────────────────────────────────────────
-      log("DETAIL", "[7] Waiting for START TRADING button (10s)…");
-      dumpButtons("DETAIL-BEFORE-START-TRADING");
-      const startBtn = await waitForElementByText("button, a", "START TRADING", 10000);
-      if (!startBtn) {
-        err("DETAIL", "[7] START TRADING button not found after 10s.");
-        dumpButtons("DETAIL-[7]-FAILED");
-        return;
-      }
-      log("DETAIL", `[7] Found START TRADING: tag=${startBtn.tagName} text="${startBtn.textContent?.trim()}" class="${startBtn.className}"`);
-      startBtn.click();
-      log("DETAIL", "[7] ✅ Clicked START TRADING. Waiting 2.5s…");
-      await sleep(2500);
+        // ── [8] Confirm modal ────────────────────────────────────────────────
+        log("DETAIL", "[8] Waiting for CONFIRM button in modal (8s)…");
+        dumpButtons("DETAIL-AFTER-START-TRADING");
 
-      // ── [8] Confirm modal ──────────────────────────────────────────────────
-      log("DETAIL", "[8] Waiting for CONFIRM button in modal (8s)…");
-      dumpButtons("DETAIL-AFTER-START-TRADING");
+        const allConfirmBtns = await (async () => {
+          const end = Date.now() + 8000;
+          while (Date.now() < end) {
+            const btns = Array.from(document.querySelectorAll("button")).filter(
+              (b) => b.textContent?.trim().toUpperCase() === "CONFIRM"
+            );
+            if (btns.length) return btns;
+            await sleep(400);
+          }
+          return [];
+        })();
 
-      const allConfirmBtns = await (async () => {
-        const end = Date.now() + 8000;
-        while (Date.now() < end) {
-          const btns = Array.from(document.querySelectorAll("button")).filter(
-            (b) => b.textContent?.trim().toUpperCase() === "CONFIRM"
-          );
-          if (btns.length) return btns;
-          await sleep(400);
+        if (allConfirmBtns.length) {
+          const green = allConfirmBtns[allConfirmBtns.length - 1];
+          log("DETAIL", `[8] Found ${allConfirmBtns.length} CONFIRM btn(s), clicking last: class="${green.className}"`);
+          green.click();
+          log("DETAIL", "[8] ✅ Clicked CONFIRM. Waiting 3s…");
+          await sleep(3000);
+        } else {
+          warn("DETAIL", "[8] CONFIRM modal not found — continuing anyway.");
+          dumpButtons("DETAIL-[8]-NO-MODAL");
         }
-        return [];
-      })();
-
-      if (allConfirmBtns.length) {
-        const green = allConfirmBtns[allConfirmBtns.length - 1];
-        log("DETAIL", `[8] Found ${allConfirmBtns.length} CONFIRM button(s), clicking last one: "${green.textContent?.trim()}" class="${green.className}"`);
-        green.click();
-        log("DETAIL", "[8] ✅ Clicked CONFIRM. Waiting 3s…");
-        await sleep(3000);
       } else {
-        warn("DETAIL", "[8] CONFIRM modal not found after 8s — continuing.");
-        dumpButtons("DETAIL-[8]-NO-MODAL");
+        log("DETAIL", "[6-8] Template link already on page — order is in Delivering state. Jumping to download.");
       }
 
       // ── [9] Template download ──────────────────────────────────────────────
