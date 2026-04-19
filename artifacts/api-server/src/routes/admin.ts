@@ -18,16 +18,25 @@ function saveMappings(data: Record<string, string>) {
   fs.writeFileSync(MAPPINGS_FILE, JSON.stringify(data, null, 2));
 }
 
-function listCachedOrders(): { orderId: string; bytes: number; mtime: string }[] {
+function listCachedOrders(): { orderId: string; xlsxBytes?: number; accounts?: number; mtime: string }[] {
   if (!fs.existsSync(CACHE_DIR)) return [];
-  return fs
-    .readdirSync(CACHE_DIR)
-    .filter((f) => f.endsWith(".xlsx"))
-    .map((f) => {
-      const stat = fs.statSync(path.join(CACHE_DIR, f));
-      return { orderId: f.replace(".xlsx", ""), bytes: stat.size, mtime: stat.mtime.toISOString() };
-    })
-    .sort((a, b) => b.mtime.localeCompare(a.mtime));
+  const map = new Map<string, { orderId: string; xlsxBytes?: number; accounts?: number; mtime: string }>();
+  for (const f of fs.readdirSync(CACHE_DIR)) {
+    if (!f.endsWith(".xlsx") && !f.endsWith(".json")) continue;
+    const base = f.replace(/\.(xlsx|json)$/, "");
+    if (!map.has(base)) map.set(base, { orderId: base, mtime: "" });
+    const entry = map.get(base)!;
+    const stat = fs.statSync(path.join(CACHE_DIR, f));
+    if (f.endsWith(".xlsx")) entry.xlsxBytes = stat.size;
+    if (f.endsWith(".json")) {
+      try {
+        const lines = JSON.parse(fs.readFileSync(path.join(CACHE_DIR, f), "utf-8")) as string[];
+        entry.accounts = lines.length;
+      } catch { /* ignore corrupt json */ }
+    }
+    if (!entry.mtime || stat.mtime.toISOString() > entry.mtime) entry.mtime = stat.mtime.toISOString();
+  }
+  return [...map.values()].sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
 const router = Router();
@@ -126,26 +135,28 @@ async function loadServices() {
 }
 
 async function loadMappings() {
-  const res = await fetch('/api/admin/mappings');
-  const data = await res.json();
-  const tbody = document.getElementById('mappingsBody');
-  const entries = Object.entries(data);
-  if (!entries.length) {
-    tbody.innerHTML = '<tr><td colspan="3" style="color:#64748b">No mappings yet.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = entries.map(([title, id]) => \`
-    <tr>
-      <td>\${title}</td>
-      <td><span class="tag">\${id}</span></td>
-      <td><button class="danger" onclick="deleteMapping('\${encodeURIComponent(title)}')">Delete</button></td>
-    </tr>
-  \`).join('');
+  try {
+    const res = await fetch('/api/admin/mappings');
+    const data = await res.json();
+    const tbody = document.getElementById('mappingsBody');
+    const entries = Object.entries(data);
+    if (!entries.length) {
+      tbody.innerHTML = '<tr><td colspan="3" style="color:#64748b">No mappings yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = entries.map(([title, id]) => \`
+      <tr>
+        <td>\${title}</td>
+        <td><span class="tag">\${id}</span></td>
+        <td><button class="danger" onclick="deleteMapping('\${encodeURIComponent(title)}')">Delete</button></td>
+      </tr>
+    \`).join('');
+  } catch(e) { console.error('loadMappings error', e); }
 }
 
 async function loadOrders() {
   try {
-    const res = await fetch('/api/order-cache');
+    const res = await fetch('/api/admin/cached-orders');
     const data = await res.json();
     const tbody = document.getElementById('ordersBody');
     const count = document.getElementById('orderCount');
