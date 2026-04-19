@@ -187,9 +187,9 @@
     return null;
   }
 
-  async function uploadAndConfirm(filledBytes, filename) {
+  async function uploadAndConfirm(filledBytes, filename, quantity) {
     const uploadName = filename || "template.xlsx";
-    log("UPLOAD", `[A] Creating file object as: "${uploadName}"`);
+    log("UPLOAD", `[A] Creating file object as: "${uploadName}" (qty=${quantity})`);
     const file = new File([new Uint8Array(filledBytes)], uploadName, {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
@@ -211,19 +211,95 @@
 
     injectFileIntoInput(input, file);
     log("UPLOAD", `[B] File injected (${filledBytes.length} bytes).`);
-    await sleep(1000);
+    await sleep(800);
 
-    // ── Step C: Click "Upload Form" to submit the file ───────────────────────
-    // On Z2U, "Upload Form" acts as the submit trigger for #upfile.
-    log("UPLOAD", `[C] Clicking "Upload Form" to submit the file…`);
+    // ── Step C: Click "Upload Form" to open the upload modal ─────────────────
+    log("UPLOAD", `[C] Clicking "Upload Form" to open modal…`);
     const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 5000);
-    if (uploadFormBtn) {
-      uploadFormBtn.click();
-      log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting 3s for Z2U to process upload…`);
+    if (!uploadFormBtn) {
+      warn("UPLOAD", `[C] "Upload Form" button not found.`);
+      return false;
+    }
+    uploadFormBtn.click();
+    log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal…`);
+    await sleep(1500);
+
+    // ── Step C2: Fill transactions count in the upload modal ─────────────────
+    // The modal has an input for "Number of transactions" that must be set
+    // to the order quantity before clicking Submit, or Z2U rejects the upload.
+    log("UPLOAD", `[C2] Looking for transactions/quantity input in modal…`);
+    const qtyInput = await (async () => {
+      const end = Date.now() + 6000;
+      while (Date.now() < end) {
+        const inputs = Array.from(document.querySelectorAll("input"));
+        // Priority 1: number input that is NOT the file input
+        const numInput = inputs.find((i) => i.type === "number" && i.type !== "file");
+        if (numInput) return numInput;
+        // Priority 2: text input inside a visible modal/dialog (not file, not hidden)
+        const modal = document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog'], [class*='upload']");
+        if (modal) {
+          const modalInput = Array.from(modal.querySelectorAll("input"))
+            .find((i) => i.type !== "file" && i.type !== "hidden" && i.type !== "checkbox");
+          if (modalInput) return modalInput;
+        }
+        await sleep(400);
+      }
+      return null;
+    })();
+
+    if (qtyInput) {
+      // Clear then set value using native setter so React/Vue picks up the change
+      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      if (nativeSet) nativeSet.call(qtyInput, String(quantity));
+      else qtyInput.value = String(quantity);
+      qtyInput.dispatchEvent(new Event("input",  { bubbles: true }));
+      qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
+      log("UPLOAD", `[C2] ✅ Set transactions input to ${quantity} (id="${qtyInput.id}" name="${qtyInput.name}")`);
+    } else {
+      warn("UPLOAD", `[C2] Transactions input not found — continuing without setting it.`);
+    }
+    await sleep(500);
+
+    // ── Step C3: Also inject file into any modal-level file input ─────────────
+    // Some Z2U modal flows have a second file input inside the modal itself.
+    const modal = document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog']");
+    if (modal) {
+      const modalFileInput = Array.from(modal.querySelectorAll("input[type='file']"))
+        .find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name));
+      if (modalFileInput && !modalFileInput.files?.length) {
+        log("UPLOAD", `[C3] Found modal file input — injecting file again.`);
+        injectFileIntoInput(modalFileInput, file);
+        await sleep(400);
+      }
+    }
+
+    // ── Step C4: Click SUBMIT in the modal ───────────────────────────────────
+    log("UPLOAD", `[C4] Looking for SUBMIT button in upload modal…`);
+    const submitBtn = await (async () => {
+      const end = Date.now() + 5000;
+      while (Date.now() < end) {
+        // Prefer a button inside the modal
+        const m = document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog']");
+        if (m) {
+          const btn = Array.from(m.querySelectorAll("button"))
+            .find((b) => /^submit$/i.test(b.textContent?.trim() || ""));
+          if (btn) return btn;
+        }
+        // Fallback: any visible SUBMIT button on the page
+        const btn = Array.from(document.querySelectorAll("button"))
+          .find((b) => /^submit$/i.test(b.textContent?.trim() || ""));
+        if (btn) return btn;
+        await sleep(400);
+      }
+      return null;
+    })();
+
+    if (submitBtn) {
+      submitBtn.click();
+      log("UPLOAD", `[C4] ✅ Clicked SUBMIT. Waiting 3s for upload to process…`);
       await sleep(3000);
     } else {
-      warn("UPLOAD", `[C] "Upload Form" button not found — may have submitted automatically.`);
-      await sleep(2000);
+      warn("UPLOAD", `[C4] SUBMIT button not found — continuing to Confirm Delivered.`);
     }
 
     dumpButtons("UPLOAD-BEFORE-CONFIRM");
@@ -642,7 +718,7 @@
 
       // ── [11] Upload + confirm delivered ───────────────────────────────────
       log("DETAIL", "[11] Uploading filled file…");
-      const uploaded = await uploadAndConfirm(filledBytes, templateFilename);
+      const uploaded = await uploadAndConfirm(filledBytes, templateFilename, quantity);
       if (uploaded) {
         await bgMarkProcessed(orderId);
         log("DETAIL", `[11] ✅ Order ${orderId} fully completed and marked processed.`);
