@@ -1,0 +1,34 @@
+[Z2U][00:05:42.198] INIT ▶ Running on DETAIL page.
+content.js:15 [Z2U][00:05:44.835] DETAIL 📄 Page loaded | orderId="Z9639148852"
+content.js:15 [Z2U][00:05:44.868] DETAIL Waiting 1s for page to fully render…
+content.js:15 [Z2U][00:05:45.903] DETAIL [1] Status → NEW ORDER:true | PREPARING:true | DELIVERING:true | badge:"not found"
+content.js:15 [Z2U][00:05:45.927] DETAIL [2A] Found "Product Title" label → raw: ": ⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domain" → cleaned: "⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains�"
+content.js:15 [Z2U][00:05:45.928] DETAIL [2] Final title: "⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"
+content.js:15 [Z2U][00:05:46.036] DETAIL [3] Mappings available: ["⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accounts - ⭐Valid for 24h -❌NON-Gmail Domains🔥🔥No SMS Verification 🔥🔥Required High-quality and efficient accounts |"]
+content.js:15 [Z2U][00:05:46.036] DETAIL [3] ✅ Mapping found → productId="1-00d7438d-d8d3-4a0b-b5a6-8c96d1d4cf35"
+content.js:15 [Z2U][00:05:46.041] DETAIL [4] bgIsProcessed → false
+content.js:15 [Z2U][00:05:46.061] DETAIL [5] Found QUANTITY label → next element text: "32" → parsed: 32
+content.js:15 [Z2U][00:05:46.061] DETAIL [5] Using quantity: 32
+content.js:15 [Z2U][00:05:46.061] DETAIL 🚀 Starting fulfillment | orderId=Z9639148852 | qty=32
+content.js:15 [Z2U][00:05:46.062] DETAIL-BEFORE-PREPARING Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "IN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "Upload/View", "Download Bulk Delivery Form Template", "Upload Form", "Confirm Delivered", "Confirm Delivered", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
+content.js:15 [Z2U][00:05:46.064] DETAIL [6] Template link found by: text="Download Bulk Delivery Form Template" href="https://www.z2u.com/downloadFormTemp/order_id/Z9639148852"
+content.js:15 [Z2U][00:05:46.065] DETAIL [6] Page state → hasTemplateLink:true | hasStartTrading:false | hasPrepBtn:false
+content.js:15 [Z2U][00:05:46.065] DETAIL-STATE-CHECK Buttons on page → ["No more prompts", "Cancel", "Confirm", "Categories", "How to buy", "Sell at z2u", "IN |
+                            USD", "Store Management", "Marketing Campaign", "Withdrawal Management", "Logout", "User Menu", "Store Management", "Marketing Campaign", "Withdrawal Management", "Submit", "Contact buyers by mail", "Submit", "Cancel Order", "Manage listing here", "Submit", "Upload/View", "Download Bulk Delivery Form Template", "Upload Form", "Confirm Delivered", "Confirm Delivered", "view snapshot", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Cancel", "Submit", "Morocco,
+                        English,
+                        USD", "English,USD", "Save", "×", "Save Changes", "×", "Save Changes", "×", "Cancel", "Save", "Cancel", "Confirm"]
+content.js:15 [Z2U][00:05:46.065] DETAIL [6-8] Template link already on page — order is in Delivering state. Jumping to download.
+content.js:15 [Z2U][00:05:46.066] DETAIL [9] Looking for template download link…
+content.js:15 [Z2U][00:05:46.070] DETAIL [9] Template link: text="Download Bulk Delivery Form Template" href="https://www.z2u.com/downloadFormTemp/order_id/Z9639148852"
+content.js:15 [Z2U][00:05:46.070] DL Downloading template from: https://www.z2u.com/downloadFormTemp/order_id/Z9639148852
+content.js:15 [Z2U][00:05:46.378] DL Download response: HTTP 200
+content.js:15 [Z2U][00:05:46.391] DL Downloaded 7055 bytes → filename: "Z2U_delivery_temp_Z9639148852.xlsx"
+content.js:15 [Z2U][00:05:46.391] DETAIL [9] Original template filename: "Z2U_delivery_temp_Z9639148852.xlsx"
+content.js:15 [Z2U][00:05:46.391] DETAIL [10] Sending to backend…
+content.js:15 [Z2U][00:05:46.395] BACKEND Sending to backend → orderId=Z9639148852 title="⭐⭐ Fast shipping ⭐⭐⭐ Fresh Google Accoun..." qty=32 blobSize=7055
+content.js:133 Mixed Content: The page at 'https://www.z2u.com/sellOrder?order_id=Z9639148852' was loaded over HTTPS, but requested an insecure resource 'http://173.249.32.109:3000/api/process-order'. This request has been blocked; the content must be served over HTTPS.
+sendToBackend @ content.js:133Understand this error
+content.js:22 [Z2U] DETAIL ❌ [10] Backend failed: Failed to fetch
