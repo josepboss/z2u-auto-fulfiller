@@ -251,7 +251,7 @@ router.get("/admin/cached-orders/:orderId/download", (req, res) => {
     return;
   }
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="${safe}_filled.xlsx"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${safe}.xlsx"`);
   res.send(fs.readFileSync(filePath));
 });
 

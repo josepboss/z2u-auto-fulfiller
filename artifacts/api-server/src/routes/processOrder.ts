@@ -7,10 +7,9 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { logger } from "../lib/logger.js";
 
-// xlsx-populate is a CommonJS module — preserves 100% of the original XLSX
-// format/styles/protection and only patches the exact cells written to.
+// adm-zip is CommonJS
 const require = createRequire(import.meta.url);
-const XlsxPopulate = require("xlsx-populate");
+const AdmZip = require("adm-zip");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,6 +51,68 @@ function getApiKey(): string {
   return key;
 }
 
+// ── Direct ZIP+XML XLSX fill ─────────────────────────────────────────────────
+// Treats the .xlsx as a ZIP archive and does raw XML surgery on the worksheet.
+// Nothing outside the inserted rows is touched — styles, merges, formulas,
+// protection, and every other cell remain byte-for-byte identical to the template.
+
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function buildRowXml(rowNum: number, email: string, password: string): string {
+  const eCell = `<c r="A${rowNum}" t="inlineStr"><is><t>${escapeXml(email)}</t></is></c>`;
+  const pCell = password
+    ? `<c r="B${rowNum}" t="inlineStr"><is><t>${escapeXml(password)}</t></is></c>`
+    : "";
+  return `<row r="${rowNum}">${eCell}${pCell}</row>`;
+}
+
+function fillXlsxBuffer(
+  templateBuffer: Buffer,
+  accountLines: string[],
+  qty: number
+): Buffer {
+  const zip = new AdmZip(templateBuffer);
+
+  // Find the first sheet XML — usually xl/worksheets/sheet1.xml
+  const entries: string[] = zip.getEntries().map((e: { entryName: string }) => e.entryName);
+  const sheetEntry = entries.find((n) => /xl\/worksheets\/sheet\d+\.xml/.test(n));
+  if (!sheetEntry) throw new Error("Could not find worksheet XML in xlsx");
+
+  let wsXml: string = zip.readAsText(sheetEntry);
+
+  // Remove any existing rows at row 4 and above (template data rows, usually empty)
+  // This prevents duplicate rows while keeping all header rows intact.
+  wsXml = wsXml.replace(/<row\s[^>]*\br="(\d+)"[^>]*>[\s\S]*?<\/row>/g, (match, rNum) =>
+    parseInt(rNum, 10) >= 4 ? "" : match
+  );
+
+  // Handle self-closing <sheetData/> edge case
+  wsXml = wsXml.replace(/<sheetData\s*\/>/, "<sheetData></sheetData>");
+
+  // Build and insert the data rows
+  const newRows = accountLines
+    .slice(0, qty)
+    .map((line, i) => {
+      const [email = line, password = ""] = line.split("|");
+      return buildRowXml(4 + i, email.trim(), password.trim());
+    })
+    .join("");
+
+  wsXml = wsXml.replace("</sheetData>", newRows + "</sheetData>");
+
+  zip.updateFile(sheetEntry, Buffer.from(wsXml, "utf8"));
+  return zip.toBuffer() as Buffer;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const upload = multer({ storage: multer.memoryStorage() });
 const router = Router();
 
@@ -79,8 +140,9 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
     // ── Cache check ──────────────────────────────────────────────────────────
     const cached = getCachedFile(orderId);
     if (cached) {
+      const outputFilename = req.file.originalname || `${orderId}.xlsx`;
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-      res.setHeader("Content-Disposition", `attachment; filename="order_${orderId}_filled.xlsx"`);
+      res.setHeader("Content-Disposition", `attachment; filename="${outputFilename}"`);
       res.send(cached);
       return;
     }
@@ -120,28 +182,12 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
       .map((l) => l.trim())
       .filter(Boolean);
 
-    // ── Fill XLSX using xlsx-populate ────────────────────────────────────────
-    // xlsx-populate patches ONLY the cells you set — every other cell, style,
-    // merge, protection, formula stays byte-for-byte identical to the template.
-    const workbook = await XlsxPopulate.fromDataAsync(req.file.buffer);
-    const sheet = workbook.sheet(0);
-
-    // Always write data starting from row 4 (Z2U template: row 3 = headers, row 4 = first data row)
-    const startRow = 4;
-    logger.info({ startRow }, "Writing account data from this row");
-
-    for (let i = 0; i < qty; i++) {
-      const line = accountLines[i] ?? `placeholder_${i + 1}`;
-      const [email, password] = line.split("|");
-      sheet.cell(`A${startRow + i}`).value(email ?? line);
-      sheet.cell(`B${startRow + i}`).value(password ?? "");
-    }
-
-    const outputBuffer: Buffer = await workbook.outputAsync();
+    // ── Fill XLSX via direct ZIP+XML (zero format changes) ───────────────────
+    logger.info({ qty, accounts: accountLines.length }, "Filling template via ZIP+XML surgery");
+    const outputBuffer = fillXlsxBuffer(req.file.buffer, accountLines, qty);
 
     saveCachedFile(orderId, outputBuffer);
 
-    // Use the original template filename so the filled file keeps the same name
     const outputFilename = req.file.originalname || `${orderId}.xlsx`;
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${outputFilename}"`);
