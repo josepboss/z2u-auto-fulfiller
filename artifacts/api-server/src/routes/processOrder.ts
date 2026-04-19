@@ -138,8 +138,24 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
       return;
     }
 
-    const headerRow = worksheet.getRow(1);
-    const startRow = headerRow.getCell(1).value ? 2 : 1;
+    // Z2U templates have 3 header rows:
+    //   Row 1: E-Mail | Accounts | OrderID | (warning text)
+    //   Row 2: (empty)
+    //   Row 3: *Login Account | *Login Password | (column labels)
+    //   Row 4+: data goes here
+    // Scan rows 1–20 to find the last non-empty row in columns A or B,
+    // then start data one row below that so headers are never overwritten.
+    let startRow = 1;
+    for (let r = 1; r <= 20; r++) {
+      const row = worksheet.getRow(r);
+      const a = row.getCell(1).value;
+      const b = row.getCell(2).value;
+      if (a !== null && a !== undefined && a !== "" ||
+          b !== null && b !== undefined && b !== "") {
+        startRow = r + 1;
+      }
+    }
+    logger.info({ startRow }, "Writing account data starting at row");
 
     for (let i = 0; i < qty; i++) {
       const line = accountLines[i] ?? `account_${orderId}_${i + 1}`;

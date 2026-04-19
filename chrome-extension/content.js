@@ -207,68 +207,31 @@
     log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal…`);
     await sleep(1500);
 
-    // ── Step C2: Fill transactions count in the upload modal ─────────────────
-    // The modal has an input for "Number of transactions" that must be set
-    // to the order quantity before clicking Submit, or Z2U rejects the upload.
-    log("UPLOAD", `[C2] Looking for transactions/quantity input in modal…`);
-    const qtyInput = await (async () => {
-      const end = Date.now() + 6000;
-      while (Date.now() < end) {
-        const inputs = Array.from(document.querySelectorAll("input"));
-        // Priority 1: number input that is NOT the file input
-        const numInput = inputs.find((i) => i.type === "number" && i.type !== "file");
-        if (numInput) return numInput;
-        // Priority 2: text input inside a visible modal/dialog (not file, not hidden)
-        const modal = document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog'], [class*='upload']");
-        if (modal) {
-          const modalInput = Array.from(modal.querySelectorAll("input"))
-            .find((i) => i.type !== "file" && i.type !== "hidden" && i.type !== "checkbox");
-          if (modalInput) return modalInput;
-        }
-        await sleep(400);
-      }
-      return null;
-    })();
-
-    if (qtyInput) {
-      // Clear then set value using native setter so React/Vue picks up the change
-      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-      if (nativeSet) nativeSet.call(qtyInput, String(quantity));
-      else qtyInput.value = String(quantity);
-      qtyInput.dispatchEvent(new Event("input",  { bubbles: true }));
-      qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
-      log("UPLOAD", `[C2] ✅ Set transactions input to ${quantity} (id="${qtyInput.id}" name="${qtyInput.name}")`);
-    } else {
-      warn("UPLOAD", `[C2] Transactions input not found — continuing without setting it.`);
-    }
-    await sleep(500);
-
-    // ── Step C3: Also inject file into any modal-level file input ─────────────
-    // Some Z2U modal flows have a second file input inside the modal itself.
-    const modal = document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog']");
-    if (modal) {
-      const modalFileInput = Array.from(modal.querySelectorAll("input[type='file']"))
+    // ── Step C2: Inject file into the modal's own file input (if present) ────
+    const modalEl = () => document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog']");
+    const m = modalEl();
+    if (m) {
+      const modalFileInput = Array.from(m.querySelectorAll("input[type='file']"))
         .find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name));
       if (modalFileInput && !modalFileInput.files?.length) {
-        log("UPLOAD", `[C3] Found modal file input — injecting file again.`);
+        log("UPLOAD", `[C2] Found modal file input — injecting file.`);
         injectFileIntoInput(modalFileInput, file);
         await sleep(400);
       }
     }
 
-    // ── Step C4: Click SUBMIT in the modal ───────────────────────────────────
-    log("UPLOAD", `[C4] Looking for SUBMIT button in upload modal…`);
+    // ── Step C3: Click SUBMIT to upload the file first ────────────────────────
+    // Z2U flow: Submit → file uploads → THEN the transactions quantity field appears.
+    log("UPLOAD", `[C3] Looking for SUBMIT button to upload file…`);
     const submitBtn = await (async () => {
       const end = Date.now() + 5000;
       while (Date.now() < end) {
-        // Prefer a button inside the modal
-        const m = document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog']");
-        if (m) {
-          const btn = Array.from(m.querySelectorAll("button"))
+        const modal = modalEl();
+        if (modal) {
+          const btn = Array.from(modal.querySelectorAll("button"))
             .find((b) => /^submit$/i.test(b.textContent?.trim() || ""));
           if (btn) return btn;
         }
-        // Fallback: any visible SUBMIT button on the page
         const btn = Array.from(document.querySelectorAll("button"))
           .find((b) => /^submit$/i.test(b.textContent?.trim() || ""));
         if (btn) return btn;
@@ -279,10 +242,54 @@
 
     if (submitBtn) {
       submitBtn.click();
-      log("UPLOAD", `[C4] ✅ Clicked SUBMIT. Waiting 3s for upload to process…`);
-      await sleep(3000);
+      log("UPLOAD", `[C3] ✅ Clicked SUBMIT. Waiting for transactions prompt…`);
+      await sleep(2000);
     } else {
-      warn("UPLOAD", `[C4] SUBMIT button not found — continuing to Confirm Delivered.`);
+      warn("UPLOAD", `[C3] SUBMIT button not found.`);
+    }
+
+    // ── Step C4: Fill the transactions/quantity field that appears after Submit ─
+    // Z2U shows a "Number of transactions" input after the file is submitted.
+    log("UPLOAD", `[C4] Looking for transactions input (appears after Submit)…`);
+    const qtyInput = await (async () => {
+      const end = Date.now() + 6000;
+      while (Date.now() < end) {
+        // Priority 1: number input anywhere on page
+        const numInput = Array.from(document.querySelectorAll("input[type='number']"))
+          .find((i) => !i.closest("[style*='display:none'], [hidden]"));
+        if (numInput) return numInput;
+        // Priority 2: any non-file text input inside a modal
+        const modal = modalEl();
+        if (modal) {
+          const inp = Array.from(modal.querySelectorAll("input"))
+            .find((i) => i.type !== "file" && i.type !== "hidden" && i.type !== "checkbox");
+          if (inp) return inp;
+        }
+        await sleep(400);
+      }
+      return null;
+    })();
+
+    if (qtyInput) {
+      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      if (nativeSet) nativeSet.call(qtyInput, String(quantity));
+      else qtyInput.value = String(quantity);
+      qtyInput.dispatchEvent(new Event("input",  { bubbles: true }));
+      qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
+      log("UPLOAD", `[C4] ✅ Set transactions to ${quantity}. Clicking OK/Submit…`);
+      await sleep(400);
+
+      // Click the confirm/OK button for the transactions dialog
+      const okBtn = Array.from(document.querySelectorAll("button"))
+        .find((b) => /^(ok|confirm|submit|yes)$/i.test(b.textContent?.trim() || ""));
+      if (okBtn) {
+        okBtn.click();
+        log("UPLOAD", `[C4] ✅ Clicked "${okBtn.textContent?.trim()}" to confirm transactions.`);
+        await sleep(2500);
+      }
+    } else {
+      warn("UPLOAD", `[C4] Transactions input not found — continuing.`);
+      await sleep(1000);
     }
 
     dumpButtons("UPLOAD-BEFORE-CONFIRM");
