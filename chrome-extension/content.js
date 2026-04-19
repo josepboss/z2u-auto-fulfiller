@@ -109,42 +109,25 @@
   }
 
   // ── Backend call ───────────────────────────────────────────────────────────
-  // Content scripts call the backend directly via fetch (no chrome.runtime relay)
-  // to avoid binary data serialization issues through the extension message bus.
+  // The fetch runs inside background.js (service workers are exempt from the
+  // browser's mixed-content policy, so HTTP VPS URLs work from HTTPS Z2U pages).
 
   async function sendToBackend({ orderId, title, quantity, templateBlob }) {
     log("BACKEND", `Sending to backend → orderId=${orderId} title="${title.slice(0, 40)}..." qty=${quantity} blobSize=${templateBlob.length}`);
 
-    const { serverUrl } = await chrome.storage.local.get("serverUrl");
-    const base = serverUrl || CONFIG.SERVER_URL;
-
-    const formData = new FormData();
-    formData.append(
-      "file",
-      new Blob([new Uint8Array(templateBlob)], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      }),
-      "template.xlsx"
-    );
-    formData.append("title", title);
-    formData.append("quantity", String(quantity));
-    formData.append("orderId", orderId);
-
-    const res = await fetch(`${base}/api/process-order`, {
-      method: "POST",
-      body: formData,
+    const result = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ type: "PROCESS_ORDER", data: { orderId, title, quantity, templateBlob } }, (r) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        log("BACKEND", `Backend response received: ok=${r?.ok} filledSize=${r?.result?.filledFile?.length ?? 0}`);
+        resolve(r);
+      });
     });
 
-    log("BACKEND", `Backend HTTP ${res.status} ${res.statusText}`);
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Backend ${res.status}: ${text}`);
-    }
-
-    const arrayBuffer = await res.arrayBuffer();
-    log("BACKEND", `Backend returned ${arrayBuffer.byteLength} bytes (filled xlsx)`);
-    return new Uint8Array(arrayBuffer);
+    if (!result?.ok) throw new Error(result?.error || "Unknown backend error");
+    return new Uint8Array(result.result.filledFile);
   }
 
   // ── Upload filled file ─────────────────────────────────────────────────────
