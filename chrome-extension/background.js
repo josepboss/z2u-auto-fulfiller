@@ -86,7 +86,7 @@ async function fetchMappings() {
 }
 
 async function handleOrderProcessing(orderData) {
-  const { orderId, title, quantity, templateBlob } = orderData;
+  const { orderId, title, quantity, templateBlob, templateFilename } = orderData;
 
   const { processed } = await chrome.storage.local.get("processed");
   const processedSet = new Set(processed || []);
@@ -107,7 +107,7 @@ async function handleOrderProcessing(orderData) {
     new Blob([new Uint8Array(templateBlob)], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }),
-    "template.xlsx"
+    templateFilename || "template.xlsx"
   );
   formData.append("title", title);
   formData.append("quantity", String(quantity));

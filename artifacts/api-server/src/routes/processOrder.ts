@@ -126,21 +126,8 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
     const workbook = await XlsxPopulate.fromDataAsync(req.file.buffer);
     const sheet = workbook.sheet(0);
 
-    // Detect start row: scan rows 1–20, find the last row that has content in
-    // column A or B, then write data one row below it.
-    // Z2U template layout:
-    //   Row 1: E-Mail | Accounts | OrderID | warning
-    //   Row 2: (empty)
-    //   Row 3: *Login Account | *Login Password | …
-    //   Row 4: ← data starts here
-    let startRow = 4; // safe default
-    for (let r = 1; r <= 20; r++) {
-      const a = sheet.cell(`A${r}`).value();
-      const b = sheet.cell(`B${r}`).value();
-      const hasContent = (a !== null && a !== undefined && a !== "") ||
-                         (b !== null && b !== undefined && b !== "");
-      if (hasContent) startRow = r + 1;
-    }
+    // Always write data starting from row 4 (Z2U template: row 3 = headers, row 4 = first data row)
+    const startRow = 4;
     logger.info({ startRow }, "Writing account data from this row");
 
     for (let i = 0; i < qty; i++) {
@@ -154,8 +141,10 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
 
     saveCachedFile(orderId, outputBuffer);
 
+    // Use the original template filename so the filled file keeps the same name
+    const outputFilename = req.file.originalname || `${orderId}.xlsx`;
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename="order_${orderId}_filled.xlsx"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${outputFilename}"`);
     res.send(outputBuffer);
 
   } catch (err) {

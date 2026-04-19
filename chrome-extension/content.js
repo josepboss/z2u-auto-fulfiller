@@ -112,11 +112,11 @@
   // The fetch runs inside background.js (service workers are exempt from the
   // browser's mixed-content policy, so HTTP VPS URLs work from HTTPS Z2U pages).
 
-  async function sendToBackend({ orderId, title, quantity, templateBlob }) {
-    log("BACKEND", `Sending to backend → orderId=${orderId} title="${title.slice(0, 40)}..." qty=${quantity} blobSize=${templateBlob.length}`);
+  async function sendToBackend({ orderId, title, quantity, templateBlob, templateFilename }) {
+    log("BACKEND", `Sending to backend → orderId=${orderId} title="${title.slice(0, 40)}..." qty=${quantity} blobSize=${templateBlob.length} filename="${templateFilename}"`);
 
     const result = await new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ type: "PROCESS_ORDER", data: { orderId, title, quantity, templateBlob } }, (r) => {
+      chrome.runtime.sendMessage({ type: "PROCESS_ORDER", data: { orderId, title, quantity, templateBlob, templateFilename } }, (r) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
@@ -699,6 +699,7 @@
           title: resolvedTitle,
           quantity,
           templateBlob: Array.from(templateBlob),
+          templateFilename,
         });
         log("DETAIL", `[10] ✅ Backend success. Filled file size: ${filledBytes.length} bytes`);
       } catch (backendErr) {
