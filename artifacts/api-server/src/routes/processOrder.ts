@@ -1,11 +1,16 @@
 import { Router } from "express";
 import multer from "multer";
-import ExcelJS from "exceljs";
+import { createRequire } from "module";
 import axios from "axios";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { logger } from "../lib/logger.js";
+
+// xlsx-populate is a CommonJS module — preserves 100% of the original XLSX
+// format/styles/protection and only patches the exact cells written to.
+const require = createRequire(import.meta.url);
+const XlsxPopulate = require("xlsx-populate");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,13 +18,11 @@ const __dirname = path.dirname(__filename);
 const MAPPINGS_FILE = path.resolve(__dirname, "../../mappings.json");
 const LFOLLOWERS_API_URL = "https://lfollowers.com/api/v2";
 
-// ── Order cache — filled XLSX files stored by orderId ─────────────────────────
-// Prevents calling the Lfollowers API more than once per order (each call costs money).
+// ── Order cache ─────────────────────────────────────────────────────────────
 const CACHE_DIR = path.resolve(__dirname, "../../order-cache");
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
 
 function cacheFilePath(orderId: string): string {
-  // Sanitise orderId to safe filename characters
   const safe = orderId.replace(/[^a-zA-Z0-9_-]/g, "_");
   return path.join(CACHE_DIR, `${safe}.xlsx`);
 }
@@ -27,7 +30,7 @@ function cacheFilePath(orderId: string): string {
 function getCachedFile(orderId: string): Buffer | null {
   const p = cacheFilePath(orderId);
   if (fs.existsSync(p)) {
-    logger.info({ orderId }, "Order cache HIT — returning cached filled file (no API call)");
+    logger.info({ orderId }, "Order cache HIT — returning cached file (no API call)");
     return fs.readFileSync(p);
   }
   return null;
@@ -50,7 +53,6 @@ function getApiKey(): string {
 }
 
 const upload = multer({ storage: multer.memoryStorage() });
-
 const router = Router();
 
 router.post("/process-order", upload.single("file"), async (req, res) => {
@@ -74,28 +76,25 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
       return;
     }
 
-    // ── Cache check — if we already processed this order, return cached file ──
+    // ── Cache check ──────────────────────────────────────────────────────────
     const cached = getCachedFile(orderId);
     if (cached) {
-      const fileName = `order_${orderId}_filled.xlsx`;
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+      res.setHeader("Content-Disposition", `attachment; filename="order_${orderId}_filled.xlsx"`);
       res.send(cached);
       return;
     }
 
-    // ── New order — call Lfollowers API ───────────────────────────────────────
+    // ── Call Lfollowers API ──────────────────────────────────────────────────
     const mappings = loadMappings();
     const productId = mappings[title];
-
     if (!productId) {
       res.status(404).json({ error: `No mapping found for title: "${title}"` });
       return;
     }
 
     const qty = parseInt(quantity, 10);
-
-    logger.info({ title, productId, quantity: qty, orderId }, "Purchasing accounts from Lfollowers");
+    logger.info({ title, productId, quantity: qty, orderId }, "Purchasing from Lfollowers");
 
     const key = getApiKey();
     const lfResponse = await axios.post(LFOLLOWERS_API_URL, {
@@ -106,10 +105,6 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
     });
 
     const purchaseResult = lfResponse.data as {
-      order_id?: string;
-      product_id?: string;
-      quantity?: number;
-      charge?: string;
       delivered_data?: string;
       error?: string;
     };
@@ -120,60 +115,47 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
       return;
     }
 
-    const deliveredData = purchaseResult.delivered_data ?? "";
-    const accountLines = deliveredData
+    const accountLines = (purchaseResult.delivered_data ?? "")
       .split("\n")
-      .map((line) => line.trim())
+      .map((l) => l.trim())
       .filter(Boolean);
 
-    // ── Fill the XLSX template ─────────────────────────────────────────────────
-    const workbook = new ExcelJS.Workbook();
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore — ExcelJS types mismatch with Node 24 Buffer but works at runtime
-    await workbook.xlsx.load(req.file.buffer);
+    // ── Fill XLSX using xlsx-populate ────────────────────────────────────────
+    // xlsx-populate patches ONLY the cells you set — every other cell, style,
+    // merge, protection, formula stays byte-for-byte identical to the template.
+    const workbook = await XlsxPopulate.fromDataAsync(req.file.buffer);
+    const sheet = workbook.sheet(0);
 
-    const worksheet = workbook.worksheets[0];
-    if (!worksheet) {
-      res.status(400).json({ error: "Excel file has no worksheet" });
-      return;
-    }
-
-    // Z2U templates have 3 header rows:
-    //   Row 1: E-Mail | Accounts | OrderID | (warning text)
+    // Detect start row: scan rows 1–20, find the last row that has content in
+    // column A or B, then write data one row below it.
+    // Z2U template layout:
+    //   Row 1: E-Mail | Accounts | OrderID | warning
     //   Row 2: (empty)
-    //   Row 3: *Login Account | *Login Password | (column labels)
-    //   Row 4+: data goes here
-    // Scan rows 1–20 to find the last non-empty row in columns A or B,
-    // then start data one row below that so headers are never overwritten.
-    let startRow = 1;
+    //   Row 3: *Login Account | *Login Password | …
+    //   Row 4: ← data starts here
+    let startRow = 4; // safe default
     for (let r = 1; r <= 20; r++) {
-      const row = worksheet.getRow(r);
-      const a = row.getCell(1).value;
-      const b = row.getCell(2).value;
-      if (a !== null && a !== undefined && a !== "" ||
-          b !== null && b !== undefined && b !== "") {
-        startRow = r + 1;
-      }
+      const a = sheet.cell(`A${r}`).value();
+      const b = sheet.cell(`B${r}`).value();
+      const hasContent = (a !== null && a !== undefined && a !== "") ||
+                         (b !== null && b !== undefined && b !== "");
+      if (hasContent) startRow = r + 1;
     }
-    logger.info({ startRow }, "Writing account data starting at row");
+    logger.info({ startRow }, "Writing account data from this row");
 
     for (let i = 0; i < qty; i++) {
-      const line = accountLines[i] ?? `account_${orderId}_${i + 1}`;
+      const line = accountLines[i] ?? `placeholder_${i + 1}`;
       const [email, password] = line.split("|");
-      const row = worksheet.getRow(startRow + i);
-      row.getCell(1).value = email ?? line;
-      row.getCell(2).value = password ?? "";
-      row.commit();
+      sheet.cell(`A${startRow + i}`).value(email ?? line);
+      sheet.cell(`B${startRow + i}`).value(password ?? "");
     }
 
-    const outputBuffer = Buffer.from(await workbook.xlsx.writeBuffer());
+    const outputBuffer: Buffer = await workbook.outputAsync();
 
-    // ── Save to cache before responding ───────────────────────────────────────
     saveCachedFile(orderId, outputBuffer);
 
-    const fileName = `order_${orderId}_filled.xlsx`;
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.setHeader("Content-Disposition", `attachment; filename="order_${orderId}_filled.xlsx"`);
     res.send(outputBuffer);
 
   } catch (err) {
@@ -182,7 +164,7 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
   }
 });
 
-// ── Cache management endpoints ────────────────────────────────────────────────
+// ── Cache management ─────────────────────────────────────────────────────────
 
 router.get("/order-cache", (_req, res) => {
   const files = fs.existsSync(CACHE_DIR) ? fs.readdirSync(CACHE_DIR) : [];
