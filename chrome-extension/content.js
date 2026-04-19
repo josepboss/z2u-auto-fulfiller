@@ -139,13 +139,78 @@
     const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "files");
     if (desc && desc.set) {
       desc.set.call(input, dt.files);
-      log("UPLOAD", `[B] Injected via native files setter.`);
+      log("UPLOAD", `[inject] native files setter used`);
     } else {
       Object.defineProperty(input, "files", { value: dt.files, configurable: true });
-      log("UPLOAD", `[B] Injected via Object.defineProperty.`);
+      log("UPLOAD", `[inject] Object.defineProperty fallback used`);
     }
     input.dispatchEvent(new Event("input",  { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // Injects a file AND fires React's internal onChange so the component state updates.
+  // Z2U uses React; without this the file shows visually but the React state stays empty
+  // and SUBMIT fails with a "Please input note" (= "no file selected") validation error.
+  async function injectFileAndUpdateReact(input, file) {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+
+    // 1. Set the native files property
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "files")?.set;
+    if (nativeSetter) {
+      nativeSetter.call(input, dt.files);
+    } else {
+      Object.defineProperty(input, "files", { value: dt.files, configurable: true, writable: true });
+    }
+
+    // 2. Call React's own onChange handler via the __reactProps key on the DOM node.
+    //    This is the only reliable way to update React's internal component state
+    //    when setting files programmatically (native events alone don't always work).
+    const reactPropsKey = Object.keys(input).find(
+      (k) => k.startsWith("__reactProps") || k.startsWith("__reactInternals")
+    );
+    if (reactPropsKey) {
+      const props = input[reactPropsKey];
+      const onChangeFn = props?.onChange;
+      if (typeof onChangeFn === "function") {
+        const fakeEvent = {
+          target: input, currentTarget: input,
+          type: "change", bubbles: true,
+          nativeEvent: { target: input, type: "change" },
+          preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
+        };
+        onChangeFn(fakeEvent);
+        log("UPLOAD", `[inject] Called React onChange via ${reactPropsKey}`);
+      } else {
+        log("UPLOAD", `[inject] React props found (${reactPropsKey}) but no onChange`);
+      }
+    } else {
+      // Fallback: try __reactFiber memoizedProps
+      const fiberKey = Object.keys(input).find((k) => k.startsWith("__reactFiber"));
+      if (fiberKey) {
+        const onChange = input[fiberKey]?.memoizedProps?.onChange;
+        if (typeof onChange === "function") {
+          const fakeEvent = {
+            target: input, currentTarget: input, type: "change", bubbles: true,
+            nativeEvent: { target: input }, preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
+          };
+          onChange(fakeEvent);
+          log("UPLOAD", `[inject] Called React onChange via __reactFiber`);
+        }
+      } else {
+        log("UPLOAD", `[inject] No React props key found — dispatching native events only`);
+      }
+    }
+
+    // 3. Also dispatch native events as belt-and-suspenders
+    input.dispatchEvent(new Event("input",  { bubbles: true }));
+    await sleep(50);
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(200);
+
+    const count = input.files?.length ?? 0;
+    log("UPLOAD", `[inject] After injection: files.length=${count} name="${input.files?.[0]?.name}"`);
+    return count > 0;
   }
 
   // Find the xlsx upload input — Z2U uses id="upfile" / name="upload" for the
@@ -207,42 +272,36 @@
     log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal…`);
     await sleep(1500);
 
-    // ── Step C2: Inject file + fill required note field in the modal ─────────
+    // ── Step C2: Inject file into the modal's file input (React-aware) ───────
+    // The modal renders its OWN file input separate from the page-level one.
+    // We must inject here AND call React's onChange so the component state updates.
+    // Without calling React's onChange the file shows visually but SUBMIT fails.
     const modalEl = () => document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog']");
-    const m = modalEl();
+
+    // Wait up to 3s for modal to fully render before injecting
+    const modalWaitEnd = Date.now() + 3000;
+    let m = null;
+    while (Date.now() < modalWaitEnd) {
+      m = modalEl();
+      if (m && m.querySelector("input[type='file']")) break;
+      await sleep(300);
+    }
+
     if (m) {
-      // Inject file into the modal's own file input (if present)
       const modalFileInput = Array.from(m.querySelectorAll("input[type='file']"))
         .find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name));
-      if (modalFileInput && !modalFileInput.files?.length) {
-        log("UPLOAD", `[C2] Found modal file input — injecting file.`);
-        injectFileIntoInput(modalFileInput, file);
-        await sleep(400);
-      }
 
-      // Fill the required "note" field — Z2U rejects SUBMIT without it
-      const noteField = Array.from(m.querySelectorAll("textarea, input[type='text'], input:not([type='file']):not([type='hidden']):not([type='checkbox']):not([type='radio'])"))
-        .find((el) => {
-          const ph = (el.getAttribute("placeholder") || "").toLowerCase();
-          const nm = (el.getAttribute("name") || "").toLowerCase();
-          const id = (el.getAttribute("id") || "").toLowerCase();
-          return ph.includes("note") || nm.includes("note") || id.includes("note") || el.tagName === "TEXTAREA";
-        });
-
-      if (noteField) {
-        const nativeSet = Object.getOwnPropertyDescriptor(
-          noteField.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype,
-          "value"
-        )?.set;
-        if (nativeSet) nativeSet.call(noteField, "Delivered");
-        else noteField.value = "Delivered";
-        noteField.dispatchEvent(new Event("input",  { bubbles: true }));
-        noteField.dispatchEvent(new Event("change", { bubbles: true }));
-        log("UPLOAD", `[C2] ✅ Filled note field (tag=${noteField.tagName} placeholder="${noteField.getAttribute("placeholder")}")`);
-        await sleep(300);
+      if (modalFileInput) {
+        log("UPLOAD", `[C2] Modal file input found: id="${modalFileInput.id}" name="${modalFileInput.name}" accept="${modalFileInput.accept}"`);
+        const ok = await injectFileAndUpdateReact(modalFileInput, file);
+        if (!ok) {
+          warn("UPLOAD", `[C2] files.length still 0 after injection — SUBMIT may fail`);
+        }
       } else {
-        log("UPLOAD", `[C2] No note field found in modal — all inputs: ${Array.from(m.querySelectorAll("input,textarea")).map(i=>`tag=${i.tagName} type=${i.type} ph="${i.getAttribute("placeholder")}" name="${i.name}"`).join(" | ")}`);
+        warn("UPLOAD", `[C2] No file input inside modal. Modal inputs: ${Array.from(m.querySelectorAll("input")).map(i=>`type=${i.type} id=${i.id}`).join(" | ")}`);
       }
+    } else {
+      warn("UPLOAD", `[C2] Modal did not appear or has no file input`);
     }
 
     // ── Step C3: Click SUBMIT to upload the file first ────────────────────────
