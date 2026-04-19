@@ -207,16 +207,41 @@
     log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal…`);
     await sleep(1500);
 
-    // ── Step C2: Inject file into the modal's own file input (if present) ────
+    // ── Step C2: Inject file + fill required note field in the modal ─────────
     const modalEl = () => document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog']");
     const m = modalEl();
     if (m) {
+      // Inject file into the modal's own file input (if present)
       const modalFileInput = Array.from(m.querySelectorAll("input[type='file']"))
         .find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name));
       if (modalFileInput && !modalFileInput.files?.length) {
         log("UPLOAD", `[C2] Found modal file input — injecting file.`);
         injectFileIntoInput(modalFileInput, file);
         await sleep(400);
+      }
+
+      // Fill the required "note" field — Z2U rejects SUBMIT without it
+      const noteField = Array.from(m.querySelectorAll("textarea, input[type='text'], input:not([type='file']):not([type='hidden']):not([type='checkbox']):not([type='radio'])"))
+        .find((el) => {
+          const ph = (el.getAttribute("placeholder") || "").toLowerCase();
+          const nm = (el.getAttribute("name") || "").toLowerCase();
+          const id = (el.getAttribute("id") || "").toLowerCase();
+          return ph.includes("note") || nm.includes("note") || id.includes("note") || el.tagName === "TEXTAREA";
+        });
+
+      if (noteField) {
+        const nativeSet = Object.getOwnPropertyDescriptor(
+          noteField.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype,
+          "value"
+        )?.set;
+        if (nativeSet) nativeSet.call(noteField, "Delivered");
+        else noteField.value = "Delivered";
+        noteField.dispatchEvent(new Event("input",  { bubbles: true }));
+        noteField.dispatchEvent(new Event("change", { bubbles: true }));
+        log("UPLOAD", `[C2] ✅ Filled note field (tag=${noteField.tagName} placeholder="${noteField.getAttribute("placeholder")}")`);
+        await sleep(300);
+      } else {
+        log("UPLOAD", `[C2] No note field found in modal — all inputs: ${Array.from(m.querySelectorAll("input,textarea")).map(i=>`tag=${i.tagName} type=${i.type} ph="${i.getAttribute("placeholder")}" name="${i.name}"`).join(" | ")}`);
       }
     }
 
@@ -329,17 +354,27 @@
     confirmDeliveredBtn.click();
     await sleep(3000);
 
-    // ── Step E: Verify — Confirm Delivered button should vanish on success ───
-    const stillThere = Array.from(document.querySelectorAll("button"))
-      .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
-    if (!stillThere) {
-      log("UPLOAD", `[E] ✅ Confirm Delivered gone — delivery accepted by Z2U.`);
-      return true;
+    // ── Step E: Verify success using the definitive Z2U success indicator ────
+    // Z2U shows "View Delivery Account Information" button ONLY after the file
+    // has been accepted and delivery is confirmed. This is the ground truth.
+
+    function hasViewDeliveryBtn() {
+      return Array.from(document.querySelectorAll("button, a"))
+        .some((b) => /view\s+delivery\s+account/i.test(b.textContent || ""));
     }
 
-    // Still visible — check for a Z2U confirmation modal (separate from page "Confirm" buttons)
-    log("UPLOAD", `[E] Confirm Delivered still visible. Checking for Z2U delivery confirmation modal…`);
-    // Only click a CONFIRM button that is inside a visible modal/dialog, not the page's generic Confirm
+    // Wait up to 5s for the success button to appear
+    const successEnd = Date.now() + 5000;
+    while (Date.now() < successEnd) {
+      if (hasViewDeliveryBtn()) {
+        log("UPLOAD", `[E] ✅ "View Delivery Account Information" appeared — delivery fully accepted by Z2U.`);
+        return true;
+      }
+      await sleep(500);
+    }
+
+    // Still not there — check if there's a Z2U confirmation modal to click through
+    log("UPLOAD", `[E] Success button not yet visible. Checking for Z2U confirmation modal…`);
     const confirmModalEl = document.querySelector(".modal, [role='dialog'], .dialog, .popup, [class*='modal'], [class*='dialog']");
     if (confirmModalEl) {
       const modalConfirmBtn = Array.from(confirmModalEl.querySelectorAll("button"))
@@ -347,18 +382,27 @@
       if (modalConfirmBtn) {
         log("UPLOAD", `[E] Clicking modal-scoped Confirm button…`);
         modalConfirmBtn.click();
-        await sleep(2000);
-        const gone = !Array.from(document.querySelectorAll("button"))
-          .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
-        if (gone) { log("UPLOAD", `[E] ✅ Delivery confirmed via modal.`); return true; }
+        await sleep(2500);
+        if (hasViewDeliveryBtn()) {
+          log("UPLOAD", `[E] ✅ Delivery confirmed via modal — "View Delivery Account Information" appeared.`);
+          return true;
+        }
       }
+    }
+
+    // Fallback: "Confirm Delivered" disappeared (weaker signal)
+    const confirmGone = !Array.from(document.querySelectorAll("button"))
+      .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
+    if (confirmGone) {
+      log("UPLOAD", `[E] ✅ Confirm Delivered button gone (no View button yet — delivery likely accepted).`);
+      return true;
     }
 
     // Check for page error banner
     const errBanner = document.querySelector(".ant-message, .el-message, [class*='toast'], [class*='notify'], [class*='alert']");
     if (errBanner) warn("UPLOAD", `[E] Z2U message: "${errBanner.textContent?.trim().slice(0, 200)}"`);
 
-    warn("UPLOAD", `[E] Delivery confirmation uncertain — Trading Status on page: "${document.querySelector("[class*='tradingStatus'], [class*='trading-status'], [class*='progress']")?.textContent?.trim() || "not found"}"`);
+    warn("UPLOAD", `[E] ❌ Delivery NOT confirmed — "View Delivery Account Information" never appeared.`);
     return false;
   }
 
