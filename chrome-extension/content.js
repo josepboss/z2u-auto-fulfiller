@@ -320,9 +320,9 @@
     // Still visible — check for a Z2U confirmation modal (separate from page "Confirm" buttons)
     log("UPLOAD", `[E] Confirm Delivered still visible. Checking for Z2U delivery confirmation modal…`);
     // Only click a CONFIRM button that is inside a visible modal/dialog, not the page's generic Confirm
-    const modalEl = document.querySelector(".modal, [role='dialog'], .dialog, .popup, [class*='modal'], [class*='dialog']");
-    if (modalEl) {
-      const modalConfirmBtn = Array.from(modalEl.querySelectorAll("button"))
+    const confirmModalEl = document.querySelector(".modal, [role='dialog'], .dialog, .popup, [class*='modal'], [class*='dialog']");
+    if (confirmModalEl) {
+      const modalConfirmBtn = Array.from(confirmModalEl.querySelectorAll("button"))
         .find((b) => /^confirm$/i.test(b.textContent?.trim() || ""));
       if (modalConfirmBtn) {
         log("UPLOAD", `[E] Clicking modal-scoped Confirm button…`);
