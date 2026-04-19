@@ -18,25 +18,16 @@ function saveMappings(data: Record<string, string>) {
   fs.writeFileSync(MAPPINGS_FILE, JSON.stringify(data, null, 2));
 }
 
-function listCachedOrders(): { orderId: string; xlsxBytes?: number; accounts?: number; mtime: string }[] {
+function listCachedOrders(): { orderId: string; bytes: number; mtime: string }[] {
   if (!fs.existsSync(CACHE_DIR)) return [];
-  const map = new Map<string, { orderId: string; xlsxBytes?: number; accounts?: number; mtime: string }>();
-  for (const f of fs.readdirSync(CACHE_DIR)) {
-    if (!f.endsWith(".xlsx") && !f.endsWith(".json")) continue;
-    const base = f.replace(/\.(xlsx|json)$/, "");
-    if (!map.has(base)) map.set(base, { orderId: base, mtime: "" });
-    const entry = map.get(base)!;
-    const stat = fs.statSync(path.join(CACHE_DIR, f));
-    if (f.endsWith(".xlsx")) entry.xlsxBytes = stat.size;
-    if (f.endsWith(".json")) {
-      try {
-        const lines = JSON.parse(fs.readFileSync(path.join(CACHE_DIR, f), "utf-8")) as string[];
-        entry.accounts = lines.length;
-      } catch { /* ignore corrupt json */ }
-    }
-    if (!entry.mtime || stat.mtime.toISOString() > entry.mtime) entry.mtime = stat.mtime.toISOString();
-  }
-  return [...map.values()].sort((a, b) => b.mtime.localeCompare(a.mtime));
+  return fs
+    .readdirSync(CACHE_DIR)
+    .filter((f) => f.endsWith(".xlsx"))
+    .map((f) => {
+      const stat = fs.statSync(path.join(CACHE_DIR, f));
+      return { orderId: f.replace(".xlsx", ""), bytes: stat.size, mtime: stat.mtime.toISOString() };
+    })
+    .sort((a, b) => b.mtime.localeCompare(a.mtime));
 }
 
 const router = Router();
@@ -102,10 +93,10 @@ const html = `<!DOCTYPE html>
   <h2>Processed Orders <span id="orderCount" style="color:#64748b;font-weight:400;font-size:.8rem"></span></h2>
   <p style="color:#64748b;font-size:.8rem;margin-bottom:1rem">Filled XLSX files cached on the server. Each order is processed only once — retries serve the cached file.</p>
   <table>
-    <thead><tr><th>Order ID</th><th>Accounts</th><th>XLSX</th><th>Processed At</th><th>Download</th><th>Delete</th></tr></thead>
-    <tbody id="ordersBody"><tr><td colspan="6" style="color:#64748b">Loading...</td></tr></tbody>
+    <thead><tr><th>Order ID</th><th>Size</th><th>Processed At</th><th>Download</th></tr></thead>
+    <tbody id="ordersBody"><tr><td colspan="4" style="color:#64748b">Loading...</td></tr></tbody>
   </table>
-  <button class="danger" style="margin-top:1rem" onclick="clearAllOrders()">Delete All XLSX (keep account data)</button>
+  <button class="danger" style="margin-top:1rem" onclick="clearAllOrders()">Clear All Cached Orders</button>
 </div>
 
 <script>
@@ -135,23 +126,21 @@ async function loadServices() {
 }
 
 async function loadMappings() {
-  try {
-    const res = await fetch('/api/admin/mappings');
-    const data = await res.json();
-    const tbody = document.getElementById('mappingsBody');
-    const entries = Object.entries(data);
-    if (!entries.length) {
-      tbody.innerHTML = '<tr><td colspan="3" style="color:#64748b">No mappings yet.</td></tr>';
-      return;
-    }
-    tbody.innerHTML = entries.map(([title, id]) => \`
-      <tr>
-        <td>\${title}</td>
-        <td><span class="tag">\${id}</span></td>
-        <td><button class="danger" onclick="deleteMapping('\${encodeURIComponent(title)}')">Delete</button></td>
-      </tr>
-    \`).join('');
-  } catch(e) { console.error('loadMappings error', e); }
+  const res = await fetch('/api/admin/mappings');
+  const data = await res.json();
+  const tbody = document.getElementById('mappingsBody');
+  const entries = Object.entries(data);
+  if (!entries.length) {
+    tbody.innerHTML = '<tr><td colspan="3" style="color:#64748b">No mappings yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = entries.map(([title, id]) => \`
+    <tr>
+      <td>\${title}</td>
+      <td><span class="tag">\${id}</span></td>
+      <td><button class="danger" onclick="deleteMapping('\${encodeURIComponent(title)}')">Delete</button></td>
+    </tr>
+  \`).join('');
 }
 
 async function loadOrders() {
@@ -162,26 +151,17 @@ async function loadOrders() {
     const count = document.getElementById('orderCount');
     count.textContent = \`(\${data.length} orders)\`;
     if (!data.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="color:#64748b">No processed orders yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b">No processed orders yet.</td></tr>';
       return;
     }
     tbody.innerHTML = data.map(o => {
+      const kb = (o.bytes / 1024).toFixed(1);
       const dt = new Date(o.mtime).toLocaleString();
-      const xlsxKb = o.xlsxBytes ? (o.xlsxBytes/1024).toFixed(1)+' KB' : '<span style="color:#f59e0b">⚠ missing</span>';
-      const accs = o.accounts != null ? o.accounts+' accounts' : '<span style="color:#ef4444">no data</span>';
-      const dlBtn = o.xlsxBytes
-        ? \`<button class="dl" onclick="downloadOrder('\${o.orderId}')">⬇ XLSX</button>\`
-        : \`<button class="dl" style="background:#d97706" onclick="rebuildXlsx('\${o.orderId}')">♻ Rebuild</button>\`;
       return \`<tr>
         <td><span class="badge">\${o.orderId}</span></td>
-        <td>\${accs}</td>
-        <td>\${xlsxKb}</td>
+        <td>\${kb} KB</td>
         <td>\${dt}</td>
-        <td>\${dlBtn}</td>
-        <td>
-          <button class="danger" style="font-size:.7rem;padding:.2rem .5rem;margin:0" title="Delete XLSX only — accounts kept, will rebuild without new purchase" onclick="deleteXlsx('\${o.orderId}')">🗑 XLSX</button>
-          <button class="danger" style="font-size:.7rem;padding:.2rem .5rem;margin:0;background:#7f1d1d" title="Delete everything — NEXT REQUEST WILL BUY NEW ACCOUNTS" onclick="deleteAll('\${o.orderId}')">🗑 ALL</button>
-        </td>
+        <td><button class="dl" onclick="downloadOrder('\${o.orderId}')">⬇ Download</button></td>
       </tr>\`;
     }).join('');
   } catch(e) { console.error(e); }
@@ -212,32 +192,11 @@ function downloadOrder(orderId) {
   window.location.href = '/api/admin/cached-orders/' + orderId + '/download';
 }
 
-async function deleteXlsx(orderId) {
-  if (!confirm('Delete the XLSX for ' + orderId + '?\n\nThe purchased accounts are kept — the XLSX will be rebuilt from them on the next request without calling the API again.')) return;
-  const res = await fetch('/api/order-cache/' + orderId + '/xlsx', { method: 'DELETE' });
-  const data = await res.json();
-  showMsg(res.ok ? data.message : data.error, res.ok);
-  loadOrders();
-}
-
-async function deleteAll(orderId) {
-  if (!confirm('⚠ Delete ALL data for ' + orderId + '?\n\nThis includes the purchased accounts. The NEXT request WILL call the Lfollowers API and spend money!')) return;
-  const res = await fetch('/api/order-cache/' + orderId, { method: 'DELETE' });
-  const data = await res.json();
-  showMsg(res.ok ? 'Deleted: ' + (data.deleted || []).join(', ') : data.error, res.ok);
-  loadOrders();
-}
-
-async function rebuildXlsx(orderId) {
-  showMsg('Rebuild will happen automatically on the next order retry — no action needed here.', true);
-}
-
 async function clearAllOrders() {
-  if (!confirm('Delete all XLSX files?\n\nPurchased account data is kept. XLSXs will be rebuilt from saved accounts on next retry — no new API calls.')) return;
-  const res = await fetch('/api/order-cache?xlsxOnly=true', { method: 'DELETE' });
-  const data = await res.json();
-  if (res.ok) { showMsg(data.message, true); loadOrders(); }
-  else showMsg('Failed.', false);
+  if (!confirm('Clear all cached orders? The next retry for each order will call the Lfollowers API again.')) return;
+  const res = await fetch('/api/order-cache', { method: 'DELETE' });
+  if (res.ok) { showMsg('All cached orders cleared.', true); loadOrders(); }
+  else showMsg('Failed to clear orders.', false);
 }
 
 document.getElementById('serviceSelect').addEventListener('change', function() {
