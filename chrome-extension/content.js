@@ -242,14 +242,25 @@
 
     if (submitBtn) {
       submitBtn.click();
-      log("UPLOAD", `[C3] ✅ Clicked SUBMIT. Waiting for transactions prompt…`);
+      log("UPLOAD", `[C3] ✅ Clicked SUBMIT. Waiting for response…`);
       await sleep(2000);
+
+      // Check if Z2U showed an error after the upload attempt
+      const uploadError = document.querySelector(
+        ".ant-message-error, .el-message--error, [class*='error'][class*='message'], [class*='message'][class*='error']"
+      );
+      if (uploadError) {
+        const errText = uploadError.textContent?.trim().slice(0, 200) || "(unknown error)";
+        err("UPLOAD", `[C3] Z2U rejected the uploaded file: "${errText}"`);
+        return false;
+      }
     } else {
       warn("UPLOAD", `[C3] SUBMIT button not found.`);
     }
 
     // ── Step C4: Fill the transactions/quantity field that appears after Submit ─
     // Z2U shows a "Number of transactions" input after the file is submitted.
+    // If this field never appears, the upload was rejected — stop here.
     log("UPLOAD", `[C4] Looking for transactions input (appears after Submit)…`);
     const qtyInput = await (async () => {
       const end = Date.now() + 6000;
@@ -288,8 +299,17 @@
         await sleep(2500);
       }
     } else {
-      warn("UPLOAD", `[C4] Transactions input not found — continuing.`);
-      await sleep(1000);
+      // Transactions prompt never appeared — upload was rejected by Z2U.
+      // Check for any error banner before stopping.
+      const uploadErrBanner = document.querySelector(
+        ".ant-message, .el-message, [class*='toast'], [class*='notify'], [class*='alert']"
+      );
+      if (uploadErrBanner) {
+        err("UPLOAD", `[C4] Upload rejected — Z2U says: "${uploadErrBanner.textContent?.trim().slice(0, 200)}"`);
+      } else {
+        err("UPLOAD", `[C4] Transactions prompt never appeared — Z2U likely rejected the file. Stopping to avoid false confirmation.`);
+      }
+      return false;
     }
 
     dumpButtons("UPLOAD-BEFORE-CONFIRM");
