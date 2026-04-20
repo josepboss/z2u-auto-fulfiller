@@ -33,5 +33,9 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "Z2U Auto Fulfiller"
-  }
+  },
+  "web_accessible_resources": [{
+    "resources": ["injected.js"],
+    "matches": ["https://z2u.com/*", "https://www.z2u.com/*"]
+  }]
 }

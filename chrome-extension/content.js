@@ -5,6 +5,37 @@
   const isListPage   = /sellOrder\/index/.test(href);
   const isDetailPage = !isListPage && /sellOrder(\?|$)/.test(href);
 
+  // ── Inject network interceptor into page context ───────────────────────────
+  // injected.js runs in the PAGE's JS context (not the isolated extension world)
+  // so it can patch window.fetch and XMLHttpRequest.  It reports upload requests
+  // back to this content script via window.postMessage.
+  function injectNetworkInterceptor() {
+    try {
+      const s = document.createElement("script");
+      s.src = chrome.runtime.getURL("injected.js");
+      s.onload  = () => { s.remove(); };
+      s.onerror = () => { console.warn("[Z2U] Could not inject network interceptor (CSP?)."); };
+      (document.head || document.documentElement).appendChild(s);
+    } catch (e) {
+      console.warn("[Z2U] injectNetworkInterceptor failed:", e.message);
+    }
+  }
+
+  // Listen for upload requests captured by injected.js and persist them.
+  window.addEventListener("message", (e) => {
+    if (e.data?.source !== "__z2u_injected__") return;
+    if (e.data.type === "UPLOAD_REQUEST_CAPTURED") {
+      const captured = { url: e.data.url, method: e.data.method, fields: e.data.fields };
+      console.log("[Z2U][CAPTURE] Upload endpoint learned:", captured.method, captured.url, captured.fields);
+      chrome.storage.local.set({ z2uUploadEndpoint: captured });
+    }
+  });
+
+  // Inject on detail pages only (where uploads happen)
+  if (isDetailPage) {
+    injectNetworkInterceptor();
+  }
+
   // ── Logging helper ─────────────────────────────────────────────────────────
 
   function log(step, msg, ...extra) {
@@ -235,6 +266,162 @@
     return null;
   }
 
+  // ── Quantity fill + Confirm Delivered + success check ─────────────────────
+  // Shared between the direct-API path and the UI-modal path.
+  async function confirmDeliveredFlow(quantity) {
+    // Optional: fill transactions quantity if it appeared on page
+    const modalElC4 = () => document.querySelector(
+      ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
+    );
+    const qtyInputC4 = await (async () => {
+      const end = Date.now() + 6000;
+      while (Date.now() < end) {
+        const numInput = Array.from(document.querySelectorAll("input[type='number']"))
+          .find((i) => !i.closest("[style*='display:none'], [hidden]"));
+        if (numInput) return numInput;
+        const modal = modalElC4();
+        if (modal) {
+          const inp = Array.from(modal.querySelectorAll("input"))
+            .find((i) => i.type !== "file" && i.type !== "hidden" && i.type !== "checkbox");
+          if (inp) return inp;
+        }
+        await sleep(400);
+      }
+      return null;
+    })();
+
+    if (qtyInputC4) {
+      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      if (nativeSet) nativeSet.call(qtyInputC4, String(quantity));
+      else qtyInputC4.value = String(quantity);
+      qtyInputC4.dispatchEvent(new Event("input",  { bubbles: true }));
+      qtyInputC4.dispatchEvent(new Event("change", { bubbles: true }));
+      log("UPLOAD", `[C4] ✅ Set transactions to ${quantity}. Clicking OK…`);
+      await sleep(400);
+      const okBtn = Array.from(document.querySelectorAll("button"))
+        .find((b) => /^(ok|confirm|submit|yes)$/i.test(b.textContent?.trim() || ""));
+      if (okBtn) {
+        okBtn.click();
+        log("UPLOAD", `[C4] ✅ Clicked "${okBtn.textContent?.trim()}"`);
+        await sleep(2500);
+      }
+    } else {
+      log("UPLOAD", `[C4] No transactions quantity prompt — continuing to Confirm Delivered`);
+    }
+
+    dumpButtons("UPLOAD-BEFORE-CONFIRM");
+
+    // Click Confirm Delivered
+    log("UPLOAD", `[D] Looking for Confirm Delivered button…`);
+    const confirmBtn =
+      await waitForElementByText("button", "confirm delivered", 8000) ||
+      await waitForElementByText("button", "delivered", 5000);
+
+    if (!confirmBtn) {
+      warn("UPLOAD", "[D] Confirm Delivered button not found.");
+      dumpButtons("UPLOAD-FAILED");
+      return false;
+    }
+    log("UPLOAD", `[D] Clicking: "${confirmBtn.textContent?.trim()}"`);
+    confirmBtn.click();
+    await sleep(3000);
+
+    // Verify via "View Delivery Account Information" button (definitive success signal)
+    function hasViewDeliveryBtn() {
+      return Array.from(document.querySelectorAll("button, a"))
+        .some((b) => /view\s+delivery\s+account/i.test(b.textContent || ""));
+    }
+
+    const successEnd = Date.now() + 6000;
+    while (Date.now() < successEnd) {
+      if (hasViewDeliveryBtn()) {
+        log("UPLOAD", `[E] ✅ "View Delivery Account Information" appeared — delivery confirmed!`);
+        return true;
+      }
+      await sleep(500);
+    }
+
+    // One more try: click a Confirm button inside a modal that Z2U may show
+    const confirmModal = document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog']");
+    if (confirmModal) {
+      const innerConfirm = Array.from(confirmModal.querySelectorAll("button"))
+        .find((b) => /^confirm$/i.test(b.textContent?.trim() || ""));
+      if (innerConfirm) {
+        innerConfirm.click();
+        await sleep(2500);
+        if (hasViewDeliveryBtn()) {
+          log("UPLOAD", `[E] ✅ Confirmed via modal — "View Delivery Account Information" appeared.`);
+          return true;
+        }
+      }
+    }
+
+    const errBanner = document.querySelector(".ant-message-notice, .ant-message-error, .ant-message-warning");
+    if (errBanner) warn("UPLOAD", `[E] Z2U message: "${errBanner.textContent?.trim().slice(0, 200)}"`);
+    warn("UPLOAD", `[E] ❌ "View Delivery Account Information" never appeared — delivery NOT confirmed.`);
+    return false;
+  }
+
+  // ── Direct API upload (bypasses the modal entirely) ───────────────────────
+  // Uses the endpoint captured by injected.js from a previous manual/successful
+  // upload.  Replays the exact same FormData structure with our filled file,
+  // substituting the orderId field with the current order's ID.
+  async function directApiUpload(file, orderId) {
+    const stored = await new Promise((r) =>
+      chrome.storage.local.get(["z2uUploadEndpoint"], (d) => r(d.z2uUploadEndpoint))
+    );
+
+    if (!stored?.url) {
+      warn("UPLOAD-API", "No upload endpoint saved yet. Falling back to UI. " +
+        "To teach the extension: manually upload a file on any order page and it will be captured automatically.");
+      return null; // signal: use UI fallback
+    }
+
+    log("UPLOAD-API", `Saved endpoint: ${stored.method} ${stored.url}`);
+    log("UPLOAD-API", `Fields template: ${JSON.stringify(stored.fields)}`);
+
+    const formData = new FormData();
+    for (const field of stored.fields) {
+      if (field.type === "file") {
+        formData.append(field.key, file, file.name);
+        log("UPLOAD-API", `  [file] "${field.key}" = ${file.name} (${file.size} bytes)`);
+      } else {
+        // Replace any Z2U order ID in saved values with the current orderId
+        const val = /^Z\d+$/i.test(field.value) ? orderId : field.value;
+        formData.append(field.key, val);
+        log("UPLOAD-API", `  [str]  "${field.key}" = "${val}"`);
+      }
+    }
+
+    log("UPLOAD-API", "Posting...");
+    const res = await fetch(stored.url, {
+      method:      stored.method,
+      body:        formData,
+      credentials: "include",
+    });
+
+    const text = await res.text();
+    log("UPLOAD-API", `Response: HTTP ${res.status} → ${text.slice(0, 400)}`);
+
+    if (!res.ok) {
+      throw new Error(`Upload API HTTP ${res.status}: ${text.slice(0, 200)}`);
+    }
+
+    // Detect application-level failures (Z2U wraps errors in 200 responses)
+    try {
+      const json = JSON.parse(text);
+      const code = json.code ?? json.status ?? json.errCode ?? 0;
+      if (code !== 0 && code !== 200 && code !== "0" && code !== "200" && code !== true && code !== 1) {
+        throw new Error(`Upload API app-error: code=${code} msg=${json.msg ?? json.message ?? "?"}`);
+      }
+    } catch (parseErr) {
+      if (parseErr.message.startsWith("Upload API")) throw parseErr;
+      // Not JSON — assume OK
+    }
+
+    return true;
+  }
+
   async function uploadAndConfirm(filledBytes, filename, quantity) {
     const uploadName = filename || "template.xlsx";
     log("UPLOAD", `[A] Creating file object as: "${uploadName}" (qty=${quantity})`);
@@ -242,7 +429,30 @@
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
 
-    // ── Step A: Close any open modals ────────────────────────────────────────
+    // Derive orderId from URL (needed for direct API upload field substitution)
+    const _params  = new URLSearchParams(window.location.search);
+    const _orderId = _params.get("order_id") || _params.get("orderId") || "";
+
+    // ── Step A: Try direct API upload (fastest path, bypasses modal entirely) ─
+    // This works once injected.js has captured Z2U's upload endpoint from a
+    // previous successful upload (manual or automated).
+    log("UPLOAD", `[A] Trying direct API upload…`);
+    try {
+      const apiOk = await directApiUpload(file, _orderId);
+      if (apiOk) {
+        log("UPLOAD", `[A] ✅ Direct API upload succeeded. Waiting for page to update…`);
+        await sleep(2500);
+        // Skip straight to the quantity step (if it appeared) then Confirm Delivered
+        // Re-use the same C4 / D / E logic below by jumping past the modal steps.
+        // We signal this by returning the shared confirm-flow below.
+        return await confirmDeliveredFlow(quantity);
+      }
+      // apiOk === null means no saved endpoint → fall through to UI approach
+    } catch (apiErr) {
+      warn("UPLOAD", `[A] Direct API upload failed: ${apiErr.message} — falling back to UI approach`);
+    }
+
+    // ── Step A2: Close any open modals (UI fallback path) ────────────────────
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await sleep(500);
 
@@ -432,119 +642,12 @@
       warn("UPLOAD", `[C3] SUBMIT button not found.`);
     }
 
-    // ── Step C4: Fill the transactions/quantity field that appears after Submit ─
-    // Z2U shows a "Number of transactions" input after the file is submitted.
-    // If this field never appears, the upload was rejected — stop here.
-    log("UPLOAD", `[C4] Looking for transactions input (appears after Submit)…`);
-    const qtyInput = await (async () => {
-      const end = Date.now() + 6000;
-      while (Date.now() < end) {
-        // Priority 1: number input anywhere on page
-        const numInput = Array.from(document.querySelectorAll("input[type='number']"))
-          .find((i) => !i.closest("[style*='display:none'], [hidden]"));
-        if (numInput) return numInput;
-        // Priority 2: any non-file text input inside a modal
-        const modal = modalEl();
-        if (modal) {
-          const inp = Array.from(modal.querySelectorAll("input"))
-            .find((i) => i.type !== "file" && i.type !== "hidden" && i.type !== "checkbox");
-          if (inp) return inp;
-        }
-        await sleep(400);
-      }
-      return null;
-    })();
-
-    if (qtyInput) {
-      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-      if (nativeSet) nativeSet.call(qtyInput, String(quantity));
-      else qtyInput.value = String(quantity);
-      qtyInput.dispatchEvent(new Event("input",  { bubbles: true }));
-      qtyInput.dispatchEvent(new Event("change", { bubbles: true }));
-      log("UPLOAD", `[C4] ✅ Set transactions to ${quantity}. Clicking OK/Submit…`);
-      await sleep(400);
-
-      // Click the confirm/OK button for the transactions dialog
-      const okBtn = Array.from(document.querySelectorAll("button"))
-        .find((b) => /^(ok|confirm|submit|yes)$/i.test(b.textContent?.trim() || ""));
-      if (okBtn) {
-        okBtn.click();
-        log("UPLOAD", `[C4] ✅ Clicked "${okBtn.textContent?.trim()}" to confirm transactions.`);
-        await sleep(2500);
-      }
-    } else {
-      // Transactions prompt never appeared — upload was rejected by Z2U.
-      // Check for any error banner before stopping.
-      const uploadErrBanner = document.querySelector(
-        ".ant-message, .el-message, [class*='toast'], [class*='notify'], [class*='alert']"
-      );
-      if (uploadErrBanner) {
-        err("UPLOAD", `[C4] Upload rejected — Z2U says: "${uploadErrBanner.textContent?.trim().slice(0, 200)}"`);
-      } else {
-        err("UPLOAD", `[C4] Transactions prompt never appeared — Z2U likely rejected the file. Stopping to avoid false confirmation.`);
-      }
-      return false;
-    }
-
-    dumpButtons("UPLOAD-BEFORE-CONFIRM");
-
-    // ── Step D: Click Confirm Delivered ──────────────────────────────────────
-    log("UPLOAD", `[D] Looking for Confirm Delivered button…`);
-    const confirmDeliveredBtn =
-      await waitForElementByText("button", "confirm delivered", 8000) ||
-      await waitForElementByText("button", "delivered", 5000);
-
-    if (!confirmDeliveredBtn) {
-      warn("UPLOAD", "[D] Confirm Delivered button not found.");
-      dumpButtons("UPLOAD-FAILED");
-      return false;
-    }
-    log("UPLOAD", `[D] Clicking Confirm Delivered: "${confirmDeliveredBtn.textContent?.trim()}"`);
-    confirmDeliveredBtn.click();
-    await sleep(3000);
-
-    // ── Step E: Verify success using the definitive Z2U success indicator ────
-    // Z2U shows "View Delivery Account Information" button ONLY after the file
-    // has been accepted and delivery is confirmed. This is the ground truth.
-
-    function hasViewDeliveryBtn() {
-      return Array.from(document.querySelectorAll("button, a"))
-        .some((b) => /view\s+delivery\s+account/i.test(b.textContent || ""));
-    }
-
-    // Wait up to 5s for the success button to appear
-    const successEnd = Date.now() + 5000;
-    while (Date.now() < successEnd) {
-      if (hasViewDeliveryBtn()) {
-        log("UPLOAD", `[E] ✅ "View Delivery Account Information" appeared — delivery fully accepted by Z2U.`);
-        return true;
-      }
-      await sleep(500);
-    }
-
-    // Still not there — check if there's a Z2U confirmation modal to click through
-    log("UPLOAD", `[E] Success button not yet visible. Checking for Z2U confirmation modal…`);
-    const confirmModalEl = document.querySelector(".modal, [role='dialog'], .dialog, .popup, [class*='modal'], [class*='dialog']");
-    if (confirmModalEl) {
-      const modalConfirmBtn = Array.from(confirmModalEl.querySelectorAll("button"))
-        .find((b) => /^confirm$/i.test(b.textContent?.trim() || ""));
-      if (modalConfirmBtn) {
-        log("UPLOAD", `[E] Clicking modal-scoped Confirm button…`);
-        modalConfirmBtn.click();
-        await sleep(2500);
-        if (hasViewDeliveryBtn()) {
-          log("UPLOAD", `[E] ✅ Delivery confirmed via modal — "View Delivery Account Information" appeared.`);
-          return true;
-        }
-      }
-    }
-
-    // No weak fallbacks — only trust the definitive button
-    const errBanner = document.querySelector(".ant-message-notice, .ant-message-error, .ant-message-warning, .el-message");
-    if (errBanner) warn("UPLOAD", `[E] Z2U message on page: "${errBanner.textContent?.trim().slice(0, 200)}"`);
-
-    warn("UPLOAD", `[E] ❌ Delivery NOT confirmed — "View Delivery Account Information" never appeared. Marking order as FAILED.`);
-    return false;
+    // ── C4 / D / E: Shared confirm-delivered flow ────────────────────────────
+    // The UI-modal path also uses the same logic as the direct-API path.
+    // After SUBMIT, the "Please input note" error will still cause this to run,
+    // but confirmDeliveredFlow will fail to see "View Delivery Account Information"
+    // and return false — no false confirmations.
+    return await confirmDeliveredFlow(quantity);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
