@@ -38,14 +38,17 @@ chrome.webRequest.onBeforeRequest.addListener(
       );
     }
 
-    // Capture as upload endpoint: any POST with binary data (the xlsx file)
+    // Only save if the URL is on z2u.com (ignore CDNs, trackers, other sites)
+    const isZ2U = /https?:\/\/(www\.)?z2u\.com\//.test(details.url);
+    if (!isZ2U) return;
+
+    // Capture as upload endpoint: any z2u.com POST with binary data (the xlsx file)
     if (totalBytes > 0 && !endpointAlreadySaved) {
       const allFields = [{ key: "file", type: "file" }, ...textFields];
       const endpoint  = { url: details.url, method: "POST", fields: allFields };
       chrome.storage.local.set({ z2uUploadEndpoint: endpoint }, () => {
         endpointAlreadySaved = true;
         console.log("[Z2U-webRequest] ✅ Upload endpoint captured:", endpoint.url);
-        // Green badge so the user can see it without opening any console
         chrome.action.setBadgeText({ text: "✓" });
         chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
       });
