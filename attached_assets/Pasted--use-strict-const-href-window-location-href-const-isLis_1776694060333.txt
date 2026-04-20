@@ -1,0 +1,54 @@
+(() => {
+  "use strict";
+
+  const href = window.location.href;
+  const isListPage   = /sellOrder\/index/.test(href);
+  const isDetailPage = !isListPage && /sellOrder(\?|$)/.test(href);
+
+  // ── Inject network interceptor into page context ───────────────────────────
+  // injected.js runs in the PAGE's JS context (not the isolated extension world)
+  // so it can patch window.fetch and XMLHttpRequest.  It reports upload requests
+  // back to this content script via window.postMessage.
+  function injectNetworkInterceptor() {
+    try {
+      const s = document.createElement("script");
+      s.src = chrome.runtime.getURL("injected.js");
+      s.onload  = () => { s.remove(); };
+      s.onerror = () => { console.warn("[Z2U] Could not inject network interceptor (CSP?)."); };
+      (document.head || document.documentElement).appendChild(s);
+    } catch (e) {
+      console.warn("[Z2U] injectNetworkInterceptor failed:", e.message);
+    }
+  }
+
+  // Listen for upload requests captured by injected.js and persist them.
+  window.addEventListener("message", (e) => {
+    if (e.data?.source !== "__z2u_injected__") return;
+    if (e.data.type === "UPLOAD_REQUEST_CAPTURED") {
+      const captured = { url: e.data.url, method: e.data.method, fields: e.data.fields };
+      console.log("[Z2U][CAPTURE] Upload endpoint learned:", captured.method, captured.url, captured.fields);
+      chrome.storage.local.set({ z2uUploadEndpoint: captured });
+    }
+  });
+
+  // Inject on detail pages only (where uploads happen)
+  if (isDetailPage) {
+    injectNetworkInterceptor();
+  }
+
+  // ── Logging helper ─────────────────────────────────────────────────────────
+
+  function log(step, msg, ...extra) {
+    const ts = new Date().toISOString().slice(11, 23);
+    if (extra.length) {
+      console.log(`[Z2U][${ts}] ${step} ${msg}`, ...extra);
+    } else {
+      console.log(`[Z2U][${ts}] ${step} ${msg}`);
+    }
+  }
+  function warn(step, msg, ...extra) {
+    console.warn(`[Z2U] ${step} ⚠️  ${msg}`, ...extra);
+  }
+  function err(step, msg, ...extra) {
+    console.error(`[Z2U] ${step} ❌ ${msg}`, ...extra);
+  }
