@@ -1,3 +1,52 @@
+// ── Debugger Capture Mode ────────────────────────────────────────────────────
+const captureBtn = document.getElementById("captureBtn");
+const captureMsg = document.getElementById("captureMsg");
+let capturing = false;
+
+captureBtn.addEventListener("click", async () => {
+  if (capturing) {
+    chrome.runtime.sendMessage({ type: "STOP_CAPTURE" });
+    setCaptureIdle();
+    return;
+  }
+  captureBtn.disabled = true;
+  captureMsg.textContent = "Connecting…";
+  const resp = await chrome.runtime.sendMessage({ type: "START_CAPTURE" });
+  captureBtn.disabled = false;
+  if (!resp.ok) {
+    captureMsg.style.color = "#fca5a5";
+    captureMsg.textContent = "Error: " + resp.error;
+    return;
+  }
+  capturing = true;
+  captureBtn.textContent = "⏹ Stop Capture Mode";
+  captureBtn.style.background = "#dc2626";
+  captureMsg.style.color = "#7dd3fc";
+  captureMsg.textContent = "Listening… do your manual upload on Z2U now.";
+});
+
+// Listen for capture results from the background
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === "CAPTURE_COMPLETE") {
+    setCaptureIdle();
+    captureMsg.style.color = "#6ee7b7";
+    captureMsg.textContent = "✅ Endpoint captured! Auto-processing will use it now.";
+    refreshEndpointUI();
+  }
+  if (msg.type === "CAPTURE_STOPPED") {
+    setCaptureIdle();
+  }
+});
+
+function setCaptureIdle() {
+  capturing = false;
+  captureBtn.textContent = "🎯 Start Capture Mode";
+  captureBtn.style.background = "#0ea5e9";
+  if (!captureMsg.textContent.includes("✅")) {
+    captureMsg.textContent = "";
+  }
+}
+
 // ── Pause toggle ────────────────────────────────────────────────────────────
 const pauseBtn = document.getElementById("pauseBtn");
 const pauseMsg = document.getElementById("pauseMsg");

@@ -10,7 +10,8 @@
     "downloads",
     "scripting",
     "activeTab",
-    "webRequest"
+    "webRequest",
+    "debugger"
   ],
   "host_permissions": [
     "https://z2u.com/*",

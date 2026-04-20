@@ -1,12 +1,6 @@
 importScripts("config.js");
 
-// ── webRequest network-level upload capture ─────────────────────────────────
-// This is browser-level — nothing in JavaScript can bypass it.
-// We watch every POST to z2u.com and look for multipart form uploads.
-// formData contains text fields; file fields show up in raw[].
-// Auto-clear any bad captures (e.g. Cloudflare /cdn-cgi/ analytics beacons)
-// The real endpoint is captured by injected.js (MAIN world, document_start)
-// which only fires for FormData + file — no false positives possible.
+// ── Startup: auto-clear bad captures (e.g. Cloudflare /cdn-cgi/ beacons) ───
 chrome.storage.local.get(["z2uUploadEndpoint"], (d) => {
   const saved = d.z2uUploadEndpoint;
   if (saved?.url && /cdn-cgi|beacon|analytics|rum|ping|track/i.test(saved.url)) {
@@ -17,6 +11,112 @@ chrome.storage.local.get(["z2uUploadEndpoint"], (d) => {
     chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
   }
 });
+
+// ── Debugger-based upload URL capture ────────────────────────────────────────
+// Uses Chrome DevTools Protocol (CDP) Network events — captures every request
+// at the browser level regardless of XHR, fetch, iframe, web worker, etc.
+// No false positives: filters by z2u.com domain + multipart Content-Type.
+const CAPTURE = { tabId: null, active: false, timeoutId: null };
+
+function onDebugEvent(source, method, params) {
+  if (!CAPTURE.active || source.tabId !== CAPTURE.tabId) return;
+  if (method !== "Network.requestWillBeSent") return;
+
+  const req = params.request;
+  if (req.method !== "POST") return;
+  if (!/z2u\.com/i.test(req.url)) return;
+  if (/cdn-cgi|beacon|rum|ping|track/i.test(req.url)) return;
+
+  // Only save multipart/form-data (actual file upload)
+  const headers = req.headers || {};
+  const ct = headers["content-type"] || headers["Content-Type"] || "";
+  if (!ct.toLowerCase().includes("multipart/form-data")) return;
+
+  console.log("[Z2U-debugger] ✅ File upload URL captured:", req.url, "| CT:", ct);
+
+  // Try to read the POST body to get exact field names
+  chrome.debugger.sendCommand(
+    { tabId: CAPTURE.tabId },
+    "Network.getRequestPostData",
+    { requestId: params.requestId }
+  ).then((resp) => {
+    const fields = parseMultipartFields(resp?.postData || "", ct);
+    saveEndpoint(req.url, fields);
+  }).catch(() => {
+    // Body not available — use safe default field name
+    saveEndpoint(req.url, [{ key: "file", type: "file" }]);
+  });
+
+  stopCaptureMode();
+}
+
+function parseMultipartFields(postData, contentType) {
+  const fields = [];
+  const bm = contentType.match(/boundary=([^;,\s]+)/i);
+  if (!bm) return [{ key: "file", type: "file" }];
+  const sep = "--" + bm[1].trim();
+  for (const part of postData.split(sep)) {
+    const m = part.match(/Content-Disposition: form-data; name="([^"]+)"(?:; filename="([^"]+)")?/i);
+    if (!m) continue;
+    if (m[2]) {
+      fields.push({ key: m[1], type: "file" });
+    } else {
+      const v = part.split(/\r?\n\r?\n/);
+      fields.push({ key: m[1], type: "string", value: v.length > 1 ? v[1].trim() : "" });
+    }
+  }
+  return fields.length ? fields : [{ key: "file", type: "file" }];
+}
+
+function saveEndpoint(url, fields) {
+  const endpoint = { url, method: "POST", fields };
+  chrome.storage.local.set({ z2uUploadEndpoint: endpoint }, () => {
+    chrome.action.setBadgeText({ text: "✓" });
+    chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
+    console.log("[Z2U-debugger] Endpoint saved:", url, fields);
+    chrome.runtime.sendMessage({ type: "CAPTURE_COMPLETE", url }).catch(() => {});
+  });
+}
+
+async function startCaptureMode() {
+  const tabs = await chrome.tabs.query({ url: ["https://z2u.com/*", "https://www.z2u.com/*"] });
+  if (!tabs.length) return { ok: false, error: "No Z2U tab open. Open z2u.com first." };
+
+  const tab = tabs[0];
+  try {
+    await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+  } catch (e) {
+    return { ok: false, error: `Debugger attach failed: ${e.message}` };
+  }
+
+  try {
+    await chrome.debugger.sendCommand({ tabId: tab.id }, "Network.enable");
+  } catch (e) {
+    await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+    return { ok: false, error: `Network.enable failed: ${e.message}` };
+  }
+
+  CAPTURE.tabId  = tab.id;
+  CAPTURE.active = true;
+  chrome.debugger.onEvent.addListener(onDebugEvent);
+
+  // Auto-stop after 3 min if user forgets
+  CAPTURE.timeoutId = setTimeout(() => stopCaptureMode(), 3 * 60 * 1000);
+  console.log("[Z2U-debugger] Capture mode started on tab", tab.id, tab.url);
+  return { ok: true };
+}
+
+function stopCaptureMode() {
+  if (!CAPTURE.active) return;
+  CAPTURE.active = false;
+  if (CAPTURE.timeoutId) clearTimeout(CAPTURE.timeoutId);
+  chrome.debugger.onEvent.removeListener(onDebugEvent);
+  const tid = CAPTURE.tabId;
+  CAPTURE.tabId = null;
+  if (tid) chrome.debugger.detach({ tabId: tid }).catch(() => {});
+  chrome.runtime.sendMessage({ type: "CAPTURE_STOPPED" }).catch(() => {});
+  console.log("[Z2U-debugger] Capture mode stopped.");
+}
 
 function randomBetween(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -60,7 +160,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "ENDPOINT_CAPTURED") {
-    endpointAlreadySaved = true;
     chrome.action.setBadgeText({ text: "✓" });
     chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
     sendResponse({ ok: true });
@@ -68,8 +167,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "RESET_ENDPOINT") {
-    endpointAlreadySaved = false;
     chrome.action.setBadgeText({ text: "" });
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message.type === "START_CAPTURE") {
+    startCaptureMode()
+      .then((result) => sendResponse(result))
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  if (message.type === "STOP_CAPTURE") {
+    stopCaptureMode();
     sendResponse({ ok: true });
     return true;
   }
