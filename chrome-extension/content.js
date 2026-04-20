@@ -272,36 +272,102 @@
     log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal…`);
     await sleep(1500);
 
-    // ── Step C2: Inject file into the modal's file input (React-aware) ───────
-    // The modal renders its OWN file input separate from the page-level one.
-    // We must inject here AND call React's onChange so the component state updates.
-    // Without calling React's onChange the file shows visually but SUBMIT fails.
-    const modalEl = () => document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog']");
+    // ── Step C2: Inject file via click-interceptor (most reliable for React) ─
+    // Strategy: listen for the click event on the modal's hidden file input in
+    // capture phase, call preventDefault() to block the native OS file picker,
+    // then inject our bytes + dispatch a native "change" event.  Because the
+    // change event fires naturally (not via a programmatic set), React sees it
+    // exactly as if the user had picked a file through the dialog.
+    const modalEl = () => document.querySelector(
+      ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
+    );
 
-    // Wait up to 3s for modal to fully render before injecting
-    const modalWaitEnd = Date.now() + 3000;
-    let m = null;
+    // Wait up to 4s for the modal + its file input to appear
+    const modalWaitEnd = Date.now() + 4000;
+    let m = null, modalFileInput = null;
     while (Date.now() < modalWaitEnd) {
       m = modalEl();
-      if (m && m.querySelector("input[type='file']")) break;
+      if (m) {
+        modalFileInput = Array.from(m.querySelectorAll("input[type='file']"))
+          .find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name));
+        if (modalFileInput) break;
+      }
       await sleep(300);
     }
 
-    if (m) {
-      const modalFileInput = Array.from(m.querySelectorAll("input[type='file']"))
-        .find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name));
+    if (!modalFileInput) {
+      // Log what IS in the modal to help debug
+      const allInputs = Array.from(document.querySelectorAll("input[type='file']"));
+      warn("UPLOAD", `[C2] No file input found in modal. All page file inputs: ${allInputs.map(i=>`id="${i.id}" name="${i.name}"`).join(" | ")}`);
+      // Try the first non-FilePond file input on the whole page as last resort
+      modalFileInput = allInputs.find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name)) || null;
+    }
 
-      if (modalFileInput) {
-        log("UPLOAD", `[C2] Modal file input found: id="${modalFileInput.id}" name="${modalFileInput.name}" accept="${modalFileInput.accept}"`);
-        const ok = await injectFileAndUpdateReact(modalFileInput, file);
-        if (!ok) {
-          warn("UPLOAD", `[C2] files.length still 0 after injection — SUBMIT may fail`);
+    if (modalFileInput) {
+      log("UPLOAD", `[C2] Targeting file input: id="${modalFileInput.id}" name="${modalFileInput.name}"`);
+
+      // Set up click interceptor BEFORE triggering anything that might open the picker
+      await new Promise((resolve) => {
+        const handler = (e) => {
+          e.preventDefault();   // ← blocks native OS file picker
+          e.stopPropagation();
+
+          // Inject our filled bytes into the input's files property
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")?.set;
+          if (nativeSetter) {
+            nativeSetter.call(modalFileInput, dt.files);
+          } else {
+            Object.defineProperty(modalFileInput, "files", { value: dt.files, configurable: true, writable: true });
+          }
+
+          log("UPLOAD", `[C2] Click intercepted — injected file. files.length=${modalFileInput.files?.length} name="${modalFileInput.files?.[0]?.name}"`);
+
+          // Fire a native change event so React's onChange handler picks up the file
+          modalFileInput.dispatchEvent(new Event("change", { bubbles: true }));
+          resolve();
+        };
+
+        // Capture phase ensures we see the click before the browser processes it
+        modalFileInput.addEventListener("click", handler, { capture: true, once: true });
+
+        // Now trigger the click — "Select File" button → clicks file input internally
+        // Or we can click the file input directly if there's no visible button
+        const selectBtn = m
+          ? Array.from(m.querySelectorAll("button, label[for], a"))
+              .find((b) => /select\s+file|choose\s+file|browse|upload/i.test(b.textContent || ""))
+          : null;
+
+        if (selectBtn) {
+          log("UPLOAD", `[C2] Clicking "Select File"-type button: "${selectBtn.textContent?.trim()}"`);
+          selectBtn.click();
+        } else {
+          log("UPLOAD", `[C2] No "Select File" button found — clicking file input directly`);
+          modalFileInput.click();
         }
-      } else {
-        warn("UPLOAD", `[C2] No file input inside modal. Modal inputs: ${Array.from(m.querySelectorAll("input")).map(i=>`type=${i.type} id=${i.id}`).join(" | ")}`);
-      }
+
+        // Safety timeout in case click never fires (e.g. button click doesn't reach input)
+        setTimeout(() => {
+          modalFileInput.removeEventListener("click", handler, { capture: true });
+          if ((modalFileInput.files?.length ?? 0) === 0) {
+            // Fallback: inject without click, dispatch change anyway
+            log("UPLOAD", `[C2] Click timeout — falling back to direct injection + change event`);
+            const dt2 = new DataTransfer();
+            dt2.items.add(file);
+            const ns = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")?.set;
+            if (ns) ns.call(modalFileInput, dt2.files);
+            else Object.defineProperty(modalFileInput, "files", { value: dt2.files, configurable: true });
+            modalFileInput.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          resolve();
+        }, 1500);
+      });
+
+      await sleep(500);
+      log("UPLOAD", `[C2] After injection: files.length=${modalFileInput.files?.length ?? 0}`);
     } else {
-      warn("UPLOAD", `[C2] Modal did not appear or has no file input`);
+      warn("UPLOAD", `[C2] Could not find any file input — SUBMIT will likely fail`);
     }
 
     // ── Step C3: Click SUBMIT to upload the file first ────────────────────────
@@ -326,17 +392,26 @@
 
     if (submitBtn) {
       submitBtn.click();
-      log("UPLOAD", `[C3] ✅ Clicked SUBMIT. Waiting for response…`);
-      await sleep(2000);
+      log("UPLOAD", `[C3] ✅ Clicked SUBMIT. Waiting for Z2U response…`);
+      await sleep(2500);
 
-      // Check if Z2U showed an error after the upload attempt
-      const uploadError = document.querySelector(
-        ".ant-message-error, .el-message--error, [class*='error'][class*='message'], [class*='message'][class*='error']"
-      );
-      if (uploadError) {
-        const errText = uploadError.textContent?.trim().slice(0, 200) || "(unknown error)";
-        err("UPLOAD", `[C3] Z2U rejected the uploaded file: "${errText}"`);
-        return false;
+      // Check for any error/warning toast Z2U shows after a failed upload.
+      // Ant Design toasts appear as .ant-message-notice divs — grab their text.
+      const toastEls = Array.from(document.querySelectorAll(
+        ".ant-message-notice, .ant-message-error, .ant-message-warning, " +
+        ".el-message, [class*='toast'], [class*='notify']"
+      ));
+      for (const t of toastEls) {
+        const txt = t.textContent?.trim() || "";
+        if (txt) {
+          log("UPLOAD", `[C3] Z2U toast: "${txt.slice(0, 200)}"`);
+          // "Please input note" is Z2U's toast when no file is registered in React state.
+          // Any toast message here is a sign the upload was NOT accepted.
+          if (/input|note|select|file|upload|error|fail|invalid/i.test(txt)) {
+            err("UPLOAD", `[C3] Upload rejected by Z2U: "${txt.slice(0, 200)}" — aborting to avoid false confirmation.`);
+            return false;
+          }
+        }
       }
     } else {
       warn("UPLOAD", `[C3] SUBMIT button not found.`);
@@ -449,19 +524,11 @@
       }
     }
 
-    // Fallback: "Confirm Delivered" disappeared (weaker signal)
-    const confirmGone = !Array.from(document.querySelectorAll("button"))
-      .some((b) => /confirm.*delivered/i.test(b.textContent || ""));
-    if (confirmGone) {
-      log("UPLOAD", `[E] ✅ Confirm Delivered button gone (no View button yet — delivery likely accepted).`);
-      return true;
-    }
+    // No weak fallbacks — only trust the definitive button
+    const errBanner = document.querySelector(".ant-message-notice, .ant-message-error, .ant-message-warning, .el-message");
+    if (errBanner) warn("UPLOAD", `[E] Z2U message on page: "${errBanner.textContent?.trim().slice(0, 200)}"`);
 
-    // Check for page error banner
-    const errBanner = document.querySelector(".ant-message, .el-message, [class*='toast'], [class*='notify'], [class*='alert']");
-    if (errBanner) warn("UPLOAD", `[E] Z2U message: "${errBanner.textContent?.trim().slice(0, 200)}"`);
-
-    warn("UPLOAD", `[E] ❌ Delivery NOT confirmed — "View Delivery Account Information" never appeared.`);
+    warn("UPLOAD", `[E] ❌ Delivery NOT confirmed — "View Delivery Account Information" never appeared. Marking order as FAILED.`);
     return false;
   }
 
