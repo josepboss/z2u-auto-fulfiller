@@ -4,59 +4,19 @@ importScripts("config.js");
 // This is browser-level — nothing in JavaScript can bypass it.
 // We watch every POST to z2u.com and look for multipart form uploads.
 // formData contains text fields; file fields show up in raw[].
-// Track whether we already have a saved endpoint so we don't overwrite a good one
-let endpointAlreadySaved = false;
+// Auto-clear any bad captures (e.g. Cloudflare /cdn-cgi/ analytics beacons)
+// The real endpoint is captured by injected.js (MAIN world, document_start)
+// which only fires for FormData + file — no false positives possible.
 chrome.storage.local.get(["z2uUploadEndpoint"], (d) => {
-  if (d.z2uUploadEndpoint?.url) {
-    endpointAlreadySaved = true;
+  const saved = d.z2uUploadEndpoint;
+  if (saved?.url && /cdn-cgi|beacon|analytics|rum|ping|track/i.test(saved.url)) {
+    console.log("[Z2U] Auto-clearing bad captured endpoint:", saved.url);
+    chrome.storage.local.remove("z2uUploadEndpoint");
+  } else if (saved?.url) {
     chrome.action.setBadgeText({ text: "✓" });
     chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
   }
 });
-
-chrome.webRequest.onBeforeRequest.addListener(
-  (details) => {
-    if (details.method !== "POST") return;
-    const body = details.requestBody;
-    if (!body) return;
-
-    const raw      = body.raw      || [];
-    const formData = body.formData || {};
-
-    const totalBytes = raw.reduce((s, r) => s + (r.bytes?.byteLength ?? 0), 0);
-    const textFields = Object.entries(formData).map(([key, vals]) => ({
-      key,
-      type:  "string",
-      value: Array.isArray(vals) ? String(vals[0] ?? "") : String(vals),
-    }));
-
-    // Log every POST with a body so we can diagnose from the Service Worker console
-    if (totalBytes > 0 || textFields.length > 0) {
-      console.log(
-        `[Z2U-webRequest] POST ${details.url} | ` +
-        `fields=${JSON.stringify(textFields)} | rawChunks=${raw.length} bytes=${totalBytes}`
-      );
-    }
-
-    // Only save if the URL is on z2u.com (ignore CDNs, trackers, other sites)
-    const isZ2U = /https?:\/\/(www\.)?z2u\.com\//.test(details.url);
-    if (!isZ2U) return;
-
-    // Capture as upload endpoint: any z2u.com POST with binary data (the xlsx file)
-    if (totalBytes > 0 && !endpointAlreadySaved) {
-      const allFields = [{ key: "file", type: "file" }, ...textFields];
-      const endpoint  = { url: details.url, method: "POST", fields: allFields };
-      chrome.storage.local.set({ z2uUploadEndpoint: endpoint }, () => {
-        endpointAlreadySaved = true;
-        console.log("[Z2U-webRequest] ✅ Upload endpoint captured:", endpoint.url);
-        chrome.action.setBadgeText({ text: "✓" });
-        chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
-      });
-    }
-  },
-  { urls: ["<all_urls>"] },
-  ["requestBody"]
-);
 
 function randomBetween(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
