@@ -9,7 +9,8 @@
     "tabs",
     "downloads",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "webRequest"
   ],
   "host_permissions": [
     "https://z2u.com/*",

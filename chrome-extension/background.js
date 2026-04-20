@@ -1,5 +1,61 @@
 importScripts("config.js");
 
+// ── webRequest network-level upload capture ─────────────────────────────────
+// This is browser-level — nothing in JavaScript can bypass it.
+// We watch every POST to z2u.com and look for multipart form uploads.
+// formData contains text fields; file fields show up in raw[].
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details.method !== "POST") return;
+
+    const body = details.requestBody;
+    if (!body) return;
+
+    const formData = body.formData || {};
+    const raw      = body.raw     || [];
+
+    const textFields = Object.entries(formData).map(([key, vals]) => ({
+      key,
+      type:  "string",
+      value: Array.isArray(vals) ? String(vals[0] ?? "") : String(vals),
+    }));
+
+    const hasBinaryData = raw.length > 0 && raw.some((r) => r.bytes && r.bytes.byteLength > 0);
+    const hasTextFields = textFields.length > 0;
+
+    // Only care about requests that look like an upload:
+    // either has binary payload (file bytes) or has text fields alongside any binary.
+    if (!hasBinaryData && !hasTextFields) return;
+
+    // Log every POST so we can see what Z2U sends during an upload
+    console.log(
+      `[Z2U-webRequest] POST ${details.url} | ` +
+      `textFields=${JSON.stringify(textFields)} | ` +
+      `rawChunks=${raw.length} totalBytes=${raw.reduce((s, r) => s + (r.bytes?.byteLength ?? 0), 0)}`
+    );
+
+    // Heuristic: save if this looks like an upload request —
+    // has both binary data (the file) and at least one text field, OR
+    // has a text field whose value matches a Z2U order ID pattern (Z + digits).
+    const hasOrderId = textFields.some((f) => /^Z\d+$/i.test(f.value));
+    const looksLikeUpload = (hasBinaryData && hasTextFields) || hasOrderId;
+
+    if (!looksLikeUpload) return;
+
+    // Build the fields list — text fields we know, file field we label "file"
+    // (Ant Design rc-upload uses "file" by default; works for most Z2U setups).
+    const fileField = { key: "file", type: "file" };
+    const allFields = [fileField, ...textFields];
+
+    const endpoint = { url: details.url, method: "POST", fields: allFields };
+    chrome.storage.local.set({ z2uUploadEndpoint: endpoint }, () => {
+      console.log("[Z2U-webRequest] ✅ Upload endpoint saved:", endpoint.url, allFields);
+    });
+  },
+  { urls: ["https://z2u.com/*", "https://www.z2u.com/*"] },
+  ["requestBody"]
+);
+
 function randomBetween(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
