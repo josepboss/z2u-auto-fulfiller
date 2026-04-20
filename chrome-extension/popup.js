@@ -1,3 +1,27 @@
+// ── Pause toggle ────────────────────────────────────────────────────────────
+const pauseBtn = document.getElementById("pauseBtn");
+const pauseMsg = document.getElementById("pauseMsg");
+
+async function refreshPauseUI() {
+  const { autoPaused } = await chrome.storage.local.get("autoPaused");
+  if (autoPaused) {
+    pauseBtn.textContent = "▶ Resume Auto-Processing";
+    pauseBtn.style.background = "#22c55e";
+    pauseMsg.textContent = "Paused — capture still active. Do your manual upload now.";
+  } else {
+    pauseBtn.textContent = "⏸ Pause Auto-Processing";
+    pauseBtn.style.background = "#f59e0b";
+    pauseMsg.textContent = "";
+  }
+}
+
+pauseBtn.addEventListener("click", async () => {
+  const { autoPaused } = await chrome.storage.local.get("autoPaused");
+  await chrome.storage.local.set({ autoPaused: !autoPaused });
+  await refreshPauseUI();
+});
+
+// ── Clear history ────────────────────────────────────────────────────────────
 document.getElementById("clearBtn").addEventListener("click", async () => {
   await chrome.storage.local.remove(["processed", "pendingOrderId", "pendingTitle"]);
   const el = document.getElementById("clearMsg");
@@ -11,6 +35,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("serverUrl").value = url;
   document.getElementById("adminLink").href = `${url}/api/admin`;
   updateStatus(url);
+  refreshPauseUI();
 });
 
 document.getElementById("saveBtn").addEventListener("click", async () => {

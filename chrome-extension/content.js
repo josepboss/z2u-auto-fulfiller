@@ -1038,17 +1038,25 @@
   // ── Entry point ────────────────────────────────────────────────────────────
 
   function init() {
-    if (isListPage) {
-      log("INIT", "▶ Running on LIST page. Will scan every 30s.");
-      // Initial scan after page load, then poll every 30 seconds
-      setTimeout(runListPage, 2500);
-      setInterval(runListPage, 30000);
-    } else if (isDetailPage) {
-      log("INIT", "▶ Running on DETAIL page.");
-      setTimeout(runDetailPage, 2500);
-    } else {
-      log("INIT", `Page not matched: ${href}`);
-    }
+    // Check pause flag — network interceptor (injected.js) always runs regardless,
+    // so manual uploads are still captured even while automation is paused.
+    chrome.storage.local.get(["autoPaused"], ({ autoPaused }) => {
+      if (autoPaused) {
+        log("INIT", "⏸ Auto-processing is PAUSED. Network capture still active. Resume from popup.");
+        return;
+      }
+
+      if (isListPage) {
+        log("INIT", "▶ Running on LIST page. Will scan every 30s.");
+        setTimeout(runListPage, 2500);
+        setInterval(runListPage, 30000);
+      } else if (isDetailPage) {
+        log("INIT", "▶ Running on DETAIL page.");
+        setTimeout(runDetailPage, 2500);
+      } else {
+        log("INIT", `Page not matched: ${href}`);
+      }
+    });
   }
 
   if (document.readyState === "loading") {
