@@ -16,7 +16,8 @@
     "https://z2u.com/*",
     "https://www.z2u.com/*",
     "http://localhost:*/*",
-    "https://*/"
+    "https://*/*",
+    "http://*/*"
   ],
   "background": {
     "service_worker": "background.js"

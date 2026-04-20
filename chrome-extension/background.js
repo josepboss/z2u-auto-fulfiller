@@ -4,6 +4,16 @@ importScripts("config.js");
 // This is browser-level — nothing in JavaScript can bypass it.
 // We watch every POST to z2u.com and look for multipart form uploads.
 // formData contains text fields; file fields show up in raw[].
+// Track whether we already have a saved endpoint so we don't overwrite a good one
+let endpointAlreadySaved = false;
+chrome.storage.local.get(["z2uUploadEndpoint"], (d) => {
+  if (d.z2uUploadEndpoint?.url) {
+    endpointAlreadySaved = true;
+    chrome.action.setBadgeText({ text: "✓" });
+    chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
+  }
+});
+
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.method !== "POST") return;
@@ -13,29 +23,35 @@ chrome.webRequest.onBeforeRequest.addListener(
     const raw      = body.raw      || [];
     const formData = body.formData || {};
 
-    const totalBytes   = raw.reduce((s, r) => s + (r.bytes?.byteLength ?? 0), 0);
-    const textFields   = Object.entries(formData).map(([key, vals]) => ({
+    const totalBytes = raw.reduce((s, r) => s + (r.bytes?.byteLength ?? 0), 0);
+    const textFields = Object.entries(formData).map(([key, vals]) => ({
       key,
       type:  "string",
       value: Array.isArray(vals) ? String(vals[0] ?? "") : String(vals),
     }));
 
-    // Log ALL POSTs so we can see what Z2U sends — helps diagnose in Service Worker console
-    console.log(
-      `[Z2U-webRequest] POST ${details.url} | ` +
-      `fields=${JSON.stringify(textFields)} | rawChunks=${raw.length} bytes=${totalBytes}`
-    );
+    // Log every POST with a body so we can diagnose from the Service Worker console
+    if (totalBytes > 0 || textFields.length > 0) {
+      console.log(
+        `[Z2U-webRequest] POST ${details.url} | ` +
+        `fields=${JSON.stringify(textFields)} | rawChunks=${raw.length} bytes=${totalBytes}`
+      );
+    }
 
-    // Save as the upload endpoint if this POST carries binary data (file upload)
-    if (totalBytes > 0) {
+    // Capture as upload endpoint: any POST with binary data (the xlsx file)
+    if (totalBytes > 0 && !endpointAlreadySaved) {
       const allFields = [{ key: "file", type: "file" }, ...textFields];
       const endpoint  = { url: details.url, method: "POST", fields: allFields };
       chrome.storage.local.set({ z2uUploadEndpoint: endpoint }, () => {
-        console.log("[Z2U-webRequest] ✅ Saved upload endpoint:", endpoint.url);
+        endpointAlreadySaved = true;
+        console.log("[Z2U-webRequest] ✅ Upload endpoint captured:", endpoint.url);
+        // Green badge so the user can see it without opening any console
+        chrome.action.setBadgeText({ text: "✓" });
+        chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
       });
     }
   },
-  { urls: ["https://z2u.com/*", "https://www.z2u.com/*"] },
+  { urls: ["<all_urls>"] },
   ["requestBody"]
 );
 
@@ -80,6 +96,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "RESET_ENDPOINT") {
+    endpointAlreadySaved = false;
+    chrome.action.setBadgeText({ text: "" });
+    sendResponse({ ok: true });
+    return true;
+  }
+
   // Inject interceptor into page's main JS world — bypasses CSP
   if (message.type === "INJECT_INTERCEPTOR") {
     const tabId = sender.tab?.id;

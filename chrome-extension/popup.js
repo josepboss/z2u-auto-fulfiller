@@ -21,6 +21,14 @@ pauseBtn.addEventListener("click", async () => {
   await refreshPauseUI();
 });
 
+document.getElementById("resetEndpointBtn").addEventListener("click", async () => {
+  await chrome.storage.local.remove("z2uUploadEndpoint");
+  document.getElementById("uploadUrl").value = "";
+  // Tell background to reset its flag and badge
+  chrome.runtime.sendMessage({ type: "RESET_ENDPOINT" });
+  await refreshEndpointUI();
+});
+
 // ── Clear history ────────────────────────────────────────────────────────────
 document.getElementById("clearBtn").addEventListener("click", async () => {
   await chrome.storage.local.remove(["processed", "pendingOrderId", "pendingTitle"]);
@@ -28,6 +36,19 @@ document.getElementById("clearBtn").addEventListener("click", async () => {
   el.textContent = "History cleared — orders can be reprocessed.";
   setTimeout(() => (el.textContent = ""), 3000);
 });
+
+async function refreshEndpointUI() {
+  const box = document.getElementById("endpointBox");
+  const { z2uUploadEndpoint } = await chrome.storage.local.get("z2uUploadEndpoint");
+  if (z2uUploadEndpoint?.url) {
+    box.textContent = `Upload endpoint: ✅ captured`;
+    box.style.color = "#6ee7b7";
+    document.getElementById("uploadUrl").value = z2uUploadEndpoint.url;
+  } else {
+    box.textContent = "Upload endpoint: ⏳ not yet — do one manual upload";
+    box.style.color = "#fcd34d";
+  }
+}
 
 document.addEventListener("DOMContentLoaded", async () => {
   const data = await chrome.storage.local.get(["serverUrl", "z2uUploadEndpoint", "z2uFileField"]);
@@ -37,10 +58,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("adminLink").href = `${url}/api/admin`;
   updateStatus(url);
   refreshPauseUI();
+  refreshEndpointUI();
 
-  if (data.z2uUploadEndpoint?.url) {
-    document.getElementById("uploadUrl").value = data.z2uUploadEndpoint.url;
-  }
   document.getElementById("fileField").value = data.z2uFileField || "file";
 });
 
@@ -71,6 +90,7 @@ document.getElementById("saveBtn").addEventListener("click", async () => {
   }
   document.getElementById("msg").textContent = "Saved!";
   setTimeout(() => (document.getElementById("msg").textContent = ""), 2000);
+  refreshEndpointUI();
 });
 
 async function updateStatus(url) {
