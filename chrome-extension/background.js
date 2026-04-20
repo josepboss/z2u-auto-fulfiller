@@ -96,6 +96,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "ENDPOINT_CAPTURED") {
+    endpointAlreadySaved = true;
+    chrome.action.setBadgeText({ text: "✓" });
+    chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message.type === "RESET_ENDPOINT") {
     endpointAlreadySaved = false;
     chrome.action.setBadgeText({ text: "" });

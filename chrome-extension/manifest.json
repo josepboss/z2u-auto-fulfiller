@@ -28,6 +28,15 @@
         "https://z2u.com/sellOrder*",
         "https://www.z2u.com/sellOrder*"
       ],
+      "js": ["injected.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://z2u.com/sellOrder*",
+        "https://www.z2u.com/sellOrder*"
+      ],
       "js": ["config.js", "content.js"],
       "run_at": "document_idle"
     }

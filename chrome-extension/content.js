@@ -5,38 +5,22 @@
   const isListPage   = /sellOrder\/index/.test(href);
   const isDetailPage = !isListPage && /sellOrder(\?|$)/.test(href);
 
-  // ── Inject network interceptor into page context ───────────────────────────
-  // We ask the background service worker to use chrome.scripting.executeScript
-  // with world:"MAIN" — this bypasses the page's Content Security Policy (CSP)
-  // entirely, unlike a <script src="..."> tag which CSP can block.
-  function injectNetworkInterceptor() {
-    chrome.runtime.sendMessage({ type: "INJECT_INTERCEPTOR" }, (resp) => {
-      if (chrome.runtime.lastError) {
-        console.warn("[Z2U] INJECT_INTERCEPTOR message failed:", chrome.runtime.lastError.message);
-        return;
-      }
-      if (resp?.ok) {
-        console.log("[Z2U] Network interceptor injected via scripting API ✅");
-      } else {
-        console.warn("[Z2U] Network interceptor injection failed:", resp?.error);
-      }
-    });
-  }
-
-  // Listen for upload requests captured by injected.js and persist them.
+  // ── Listen for upload requests captured by injected.js ────────────────────
+  // injected.js now runs as a MAIN-world content script at document_start
+  // (declared in manifest.json) — it patches fetch/XHR before Z2U's code
+  // loads, so Z2U captures our patched versions and can't bypass them.
+  // It communicates back here via window.postMessage.
   window.addEventListener("message", (e) => {
     if (e.data?.source !== "__z2u_injected__") return;
     if (e.data.type === "UPLOAD_REQUEST_CAPTURED") {
       const captured = { url: e.data.url, method: e.data.method, fields: e.data.fields };
       console.log("[Z2U][CAPTURE] Upload endpoint learned:", captured.method, captured.url, captured.fields);
-      chrome.storage.local.set({ z2uUploadEndpoint: captured });
+      chrome.storage.local.set({ z2uUploadEndpoint: captured }, () => {
+        // Signal background to update badge
+        chrome.runtime.sendMessage({ type: "ENDPOINT_CAPTURED" });
+      });
     }
   });
-
-  // Inject on detail pages only (where uploads happen)
-  if (isDetailPage) {
-    injectNetworkInterceptor();
-  }
 
   // ── Logging helper ─────────────────────────────────────────────────────────
 
