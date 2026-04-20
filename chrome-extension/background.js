@@ -7,50 +7,33 @@ importScripts("config.js");
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.method !== "POST") return;
-
     const body = details.requestBody;
     if (!body) return;
 
+    const raw      = body.raw      || [];
     const formData = body.formData || {};
-    const raw      = body.raw     || [];
 
-    const textFields = Object.entries(formData).map(([key, vals]) => ({
+    const totalBytes   = raw.reduce((s, r) => s + (r.bytes?.byteLength ?? 0), 0);
+    const textFields   = Object.entries(formData).map(([key, vals]) => ({
       key,
       type:  "string",
       value: Array.isArray(vals) ? String(vals[0] ?? "") : String(vals),
     }));
 
-    const hasBinaryData = raw.length > 0 && raw.some((r) => r.bytes && r.bytes.byteLength > 0);
-    const hasTextFields = textFields.length > 0;
-
-    // Only care about requests that look like an upload:
-    // either has binary payload (file bytes) or has text fields alongside any binary.
-    if (!hasBinaryData && !hasTextFields) return;
-
-    // Log every POST so we can see what Z2U sends during an upload
+    // Log ALL POSTs so we can see what Z2U sends — helps diagnose in Service Worker console
     console.log(
       `[Z2U-webRequest] POST ${details.url} | ` +
-      `textFields=${JSON.stringify(textFields)} | ` +
-      `rawChunks=${raw.length} totalBytes=${raw.reduce((s, r) => s + (r.bytes?.byteLength ?? 0), 0)}`
+      `fields=${JSON.stringify(textFields)} | rawChunks=${raw.length} bytes=${totalBytes}`
     );
 
-    // Heuristic: save if this looks like an upload request —
-    // has both binary data (the file) and at least one text field, OR
-    // has a text field whose value matches a Z2U order ID pattern (Z + digits).
-    const hasOrderId = textFields.some((f) => /^Z\d+$/i.test(f.value));
-    const looksLikeUpload = (hasBinaryData && hasTextFields) || hasOrderId;
-
-    if (!looksLikeUpload) return;
-
-    // Build the fields list — text fields we know, file field we label "file"
-    // (Ant Design rc-upload uses "file" by default; works for most Z2U setups).
-    const fileField = { key: "file", type: "file" };
-    const allFields = [fileField, ...textFields];
-
-    const endpoint = { url: details.url, method: "POST", fields: allFields };
-    chrome.storage.local.set({ z2uUploadEndpoint: endpoint }, () => {
-      console.log("[Z2U-webRequest] ✅ Upload endpoint saved:", endpoint.url, allFields);
-    });
+    // Save as the upload endpoint if this POST carries binary data (file upload)
+    if (totalBytes > 0) {
+      const allFields = [{ key: "file", type: "file" }, ...textFields];
+      const endpoint  = { url: details.url, method: "POST", fields: allFields };
+      chrome.storage.local.set({ z2uUploadEndpoint: endpoint }, () => {
+        console.log("[Z2U-webRequest] ✅ Saved upload endpoint:", endpoint.url);
+      });
+    }
   },
   { urls: ["https://z2u.com/*", "https://www.z2u.com/*"] },
   ["requestBody"]
