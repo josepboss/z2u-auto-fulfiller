@@ -306,66 +306,81 @@
     if (modalFileInput) {
       log("UPLOAD", `[C2] Targeting file input: id="${modalFileInput.id}" name="${modalFileInput.name}"`);
 
-      // Set up click interceptor BEFORE triggering anything that might open the picker
+      // KEY INSIGHT: Z2U's upload component triggers the file picker TWICE.
+      // The first selection is discarded (validation step); only the second pick
+      // is actually accepted.  We must intercept BOTH clicks, prevent the OS
+      // file picker each time, and re-inject our bytes so Z2U's component
+      // processes them twice and reaches its "file accepted" internal state.
+
+      function injectIntoInput(inp, f) {
+        const dt = new DataTransfer();
+        dt.items.add(f);
+        const ns = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")?.set;
+        if (ns) ns.call(inp, dt.files);
+        else Object.defineProperty(inp, "files", { value: dt.files, configurable: true, writable: true });
+      }
+
+      let injectCount = 0;
+      let done = false;
+
       await new Promise((resolve) => {
-        const handler = (e) => {
-          e.preventDefault();   // ← blocks native OS file picker
-          e.stopPropagation();
-
-          // Inject our filled bytes into the input's files property
-          const dt = new DataTransfer();
-          dt.items.add(file);
-          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")?.set;
-          if (nativeSetter) {
-            nativeSetter.call(modalFileInput, dt.files);
-          } else {
-            Object.defineProperty(modalFileInput, "files", { value: dt.files, configurable: true, writable: true });
+        const safeResolve = () => {
+          if (!done) {
+            done = true;
+            modalFileInput.removeEventListener("click", handler, { capture: true });
+            resolve();
           }
-
-          log("UPLOAD", `[C2] Click intercepted — injected file. files.length=${modalFileInput.files?.length} name="${modalFileInput.files?.[0]?.name}"`);
-
-          // Fire a native change event so React's onChange handler picks up the file
-          modalFileInput.dispatchEvent(new Event("change", { bubbles: true }));
-          resolve();
         };
 
-        // Capture phase ensures we see the click before the browser processes it
-        modalFileInput.addEventListener("click", handler, { capture: true, once: true });
+        const handler = (e) => {
+          e.preventDefault();   // ← block the OS file picker from opening
+          e.stopPropagation();
+          injectCount++;
 
-        // Now trigger the click — "Select File" button → clicks file input internally
-        // Or we can click the file input directly if there's no visible button
+          // Re-inject our file on every intercepted click
+          injectIntoInput(modalFileInput, file);
+          log("UPLOAD", `[C2] Click #${injectCount} intercepted — files.length=${modalFileInput.files?.length} name="${modalFileInput.files?.[0]?.name}"`);
+
+          // Dispatch change so Z2U's component processes the file
+          modalFileInput.dispatchEvent(new Event("change", { bubbles: true }));
+
+          // After 2 injections the component reaches its "file accepted" state
+          if (injectCount >= 2) {
+            setTimeout(safeResolve, 700);
+          }
+        };
+
+        // Capture phase, persistent (NOT once:true) so we catch the second click too
+        modalFileInput.addEventListener("click", handler, { capture: true });
+
+        // Kick off the first click via "Select File" button (preferred) or direct click
         const selectBtn = m
-          ? Array.from(m.querySelectorAll("button, label[for], a"))
-              .find((b) => /select\s+file|choose\s+file|browse|upload/i.test(b.textContent || ""))
+          ? Array.from(m.querySelectorAll("button, label, a"))
+              .find((b) => /select\s+file|choose\s+file|browse/i.test(b.textContent || ""))
           : null;
 
         if (selectBtn) {
-          log("UPLOAD", `[C2] Clicking "Select File"-type button: "${selectBtn.textContent?.trim()}"`);
+          log("UPLOAD", `[C2] Clicking "${selectBtn.textContent?.trim()}" to start file selection`);
           selectBtn.click();
         } else {
-          log("UPLOAD", `[C2] No "Select File" button found — clicking file input directly`);
+          log("UPLOAD", `[C2] No "Select File" button — clicking file input directly`);
           modalFileInput.click();
         }
 
-        // Safety timeout in case click never fires (e.g. button click doesn't reach input)
+        // Safety: if Z2U only opens the picker once (one click total), still proceed
         setTimeout(() => {
-          modalFileInput.removeEventListener("click", handler, { capture: true });
-          if ((modalFileInput.files?.length ?? 0) === 0) {
-            // Fallback: inject without click, dispatch change anyway
-            log("UPLOAD", `[C2] Click timeout — falling back to direct injection + change event`);
-            const dt2 = new DataTransfer();
-            dt2.items.add(file);
-            const ns = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")?.set;
-            if (ns) ns.call(modalFileInput, dt2.files);
-            else Object.defineProperty(modalFileInput, "files", { value: dt2.files, configurable: true });
+          if (injectCount === 0) {
+            // Nothing fired — fall back to direct injection + change event
+            log("UPLOAD", `[C2] No click intercepted — falling back to direct injection`);
+            injectIntoInput(modalFileInput, file);
             modalFileInput.dispatchEvent(new Event("change", { bubbles: true }));
           }
-          resolve();
-        }, 1500);
+          safeResolve();
+        }, 5000);
       });
 
-      await sleep(500);
-      log("UPLOAD", `[C2] After injection: files.length=${modalFileInput.files?.length ?? 0}`);
+      await sleep(600);
+      log("UPLOAD", `[C2] Done. files.length=${modalFileInput.files?.length ?? 0}`);
     } else {
       warn("UPLOAD", `[C2] Could not find any file input — SUBMIT will likely fail`);
     }
