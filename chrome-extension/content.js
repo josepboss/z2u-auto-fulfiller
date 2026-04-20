@@ -6,19 +6,21 @@
   const isDetailPage = !isListPage && /sellOrder(\?|$)/.test(href);
 
   // ── Inject network interceptor into page context ───────────────────────────
-  // injected.js runs in the PAGE's JS context (not the isolated extension world)
-  // so it can patch window.fetch and XMLHttpRequest.  It reports upload requests
-  // back to this content script via window.postMessage.
+  // We ask the background service worker to use chrome.scripting.executeScript
+  // with world:"MAIN" — this bypasses the page's Content Security Policy (CSP)
+  // entirely, unlike a <script src="..."> tag which CSP can block.
   function injectNetworkInterceptor() {
-    try {
-      const s = document.createElement("script");
-      s.src = chrome.runtime.getURL("injected.js");
-      s.onload  = () => { s.remove(); };
-      s.onerror = () => { console.warn("[Z2U] Could not inject network interceptor (CSP?)."); };
-      (document.head || document.documentElement).appendChild(s);
-    } catch (e) {
-      console.warn("[Z2U] injectNetworkInterceptor failed:", e.message);
-    }
+    chrome.runtime.sendMessage({ type: "INJECT_INTERCEPTOR" }, (resp) => {
+      if (chrome.runtime.lastError) {
+        console.warn("[Z2U] INJECT_INTERCEPTOR message failed:", chrome.runtime.lastError.message);
+        return;
+      }
+      if (resp?.ok) {
+        console.log("[Z2U] Network interceptor injected via scripting API ✅");
+      } else {
+        console.warn("[Z2U] Network interceptor injection failed:", resp?.error);
+      }
+    });
   }
 
   // Listen for upload requests captured by injected.js and persist them.

@@ -40,7 +40,28 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   });
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Inject interceptor into page's main JS world — bypasses CSP
+  if (message.type === "INJECT_INTERCEPTOR") {
+    const tabId = sender.tab?.id;
+    if (!tabId) {
+      sendResponse({ ok: false, error: "No tab ID in sender" });
+      return true;
+    }
+    chrome.scripting.executeScript({
+      target: { tabId },
+      files:  ["injected.js"],
+      world:  "MAIN",
+    }).then(() => {
+      console.log(`[Z2U] Interceptor injected into tab ${tabId}`);
+      sendResponse({ ok: true });
+    }).catch((e) => {
+      console.warn(`[Z2U] Interceptor injection failed on tab ${tabId}:`, e.message);
+      sendResponse({ ok: false, error: e.message });
+    });
+    return true; // keep channel open for async sendResponse
+  }
+
   if (message.type === "PROCESS_ORDER") {
     handleOrderProcessing(message.data)
       .then((result) => sendResponse({ ok: true, result }))
