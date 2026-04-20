@@ -30,22 +30,47 @@ document.getElementById("clearBtn").addEventListener("click", async () => {
 });
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const { serverUrl } = await chrome.storage.local.get("serverUrl");
-  const url = serverUrl || "http://localhost:3000";
+  const data = await chrome.storage.local.get(["serverUrl", "z2uUploadEndpoint", "z2uFileField"]);
+
+  const url = data.serverUrl || "http://localhost:3000";
   document.getElementById("serverUrl").value = url;
   document.getElementById("adminLink").href = `${url}/api/admin`;
   updateStatus(url);
   refreshPauseUI();
+
+  if (data.z2uUploadEndpoint?.url) {
+    document.getElementById("uploadUrl").value = data.z2uUploadEndpoint.url;
+  }
+  document.getElementById("fileField").value = data.z2uFileField || "file";
 });
 
 document.getElementById("saveBtn").addEventListener("click", async () => {
-  const url = document.getElementById("serverUrl").value.trim();
-  if (!url) return;
-  await chrome.storage.local.set({ serverUrl: url });
-  document.getElementById("adminLink").href = `${url}/api/admin`;
+  const url       = document.getElementById("serverUrl").value.trim();
+  const uploadUrl = document.getElementById("uploadUrl").value.trim();
+  const fileField = document.getElementById("fileField").value.trim() || "file";
+
+  const toSave = { serverUrl: url || "http://localhost:3000", z2uFileField: fileField };
+
+  if (uploadUrl) {
+    // Build a minimal endpoint object — directApiUpload fills in orderId at runtime
+    toSave.z2uUploadEndpoint = {
+      url:    uploadUrl,
+      method: "POST",
+      fields: [
+        { key: fileField, type: "file" },
+      ],
+      // Flag so directApiUpload knows to also inject the orderId field
+      manualConfig: true,
+    };
+  }
+
+  await chrome.storage.local.set(toSave);
+  if (url) {
+    document.getElementById("adminLink").href = `${url}/api/admin`;
+    updateStatus(url);
+  }
   document.getElementById("msg").textContent = "Saved!";
   setTimeout(() => (document.getElementById("msg").textContent = ""), 2000);
-  updateStatus(url);
 });
 
 async function updateStatus(url) {

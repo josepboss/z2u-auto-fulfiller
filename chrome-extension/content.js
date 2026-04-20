@@ -395,6 +395,14 @@
       }
     }
 
+    // When manually configured (popup URL paste), auto-inject the orderId
+    // since we don't know the exact field name — try the two common ones.
+    if (stored.manualConfig && orderId) {
+      formData.append("orderId",  orderId);
+      formData.append("order_id", orderId);
+      log("UPLOAD-API", `  [str]  "orderId" = "${orderId}" (auto-injected for manual config)`);
+    }
+
     log("UPLOAD-API", "Posting...");
     const res = await fetch(stored.url, {
       method:      stored.method,
