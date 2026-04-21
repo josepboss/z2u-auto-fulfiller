@@ -18,33 +18,56 @@ chrome.storage.local.get(["z2uUploadEndpoint"], (d) => {
 // No false positives: filters by z2u.com domain + multipart Content-Type.
 const CAPTURE = { tabId: null, active: false, timeoutId: null };
 
+// Track pending requests so requestWillBeSentExtraInfo can match them
+const pendingRequests = new Map();
+
 function onDebugEvent(source, method, params) {
   if (!CAPTURE.active || source.tabId !== CAPTURE.tabId) return;
-  if (method !== "Network.requestWillBeSent") return;
 
-  const req = params.request;
-  if (req.method !== "POST") return;
-  if (!/z2u\.com/i.test(req.url)) return;
-  if (/cdn-cgi|beacon|rum|ping|track/i.test(req.url)) return;
+  // Primary event — always fires; capture URL + requestId
+  if (method === "Network.requestWillBeSent") {
+    const req = params.request;
+    if (req.method !== "POST") return;
+    if (!/z2u\.com/i.test(req.url)) return;
+    if (/cdn-cgi|beacon|rum|ping|track|livechat|chat|ws/i.test(req.url)) return;
+    // Store for ExtraInfo cross-reference
+    pendingRequests.set(params.requestId, { url: req.url, headers: req.headers || {} });
+    // Check Content-Type now (may already be here)
+    checkAndSave(params.requestId, req.url, req.headers || {});
+    return;
+  }
 
-  // Only save multipart/form-data (actual file upload)
-  const headers = req.headers || {};
+  // Secondary event — Chrome puts the real headers (including Content-Type) here
+  if (method === "Network.requestWillBeSentExtraInfo") {
+    const pending = pendingRequests.get(params.requestId);
+    if (!pending) return;
+    const headers = params.headers || {};
+    checkAndSave(params.requestId, pending.url, headers);
+    return;
+  }
+
+  // Cleanup finished requests
+  if (method === "Network.responseReceived" || method === "Network.loadingFailed") {
+    pendingRequests.delete(params.requestId);
+  }
+}
+
+function checkAndSave(requestId, url, headers) {
   const ct = headers["content-type"] || headers["Content-Type"] || "";
+  // Any POST with a body that looks like a file upload
   if (!ct.toLowerCase().includes("multipart/form-data")) return;
 
-  console.log("[Z2U-debugger] ✅ File upload URL captured:", req.url, "| CT:", ct);
+  console.log("[Z2U-debugger] ✅ Multipart upload intercepted:", url, "CT:", ct);
+  pendingRequests.delete(requestId);
 
-  // Try to read the POST body to get exact field names
   chrome.debugger.sendCommand(
     { tabId: CAPTURE.tabId },
     "Network.getRequestPostData",
-    { requestId: params.requestId }
+    { requestId }
   ).then((resp) => {
-    const fields = parseMultipartFields(resp?.postData || "", ct);
-    saveEndpoint(req.url, fields);
+    saveEndpoint(url, parseMultipartFields(resp?.postData || "", ct));
   }).catch(() => {
-    // Body not available — use safe default field name
-    saveEndpoint(req.url, [{ key: "file", type: "file" }]);
+    saveEndpoint(url, [{ key: "file", type: "file" }]);
   });
 
   stopCaptureMode();
