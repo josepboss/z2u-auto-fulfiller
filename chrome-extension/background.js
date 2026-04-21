@@ -161,7 +161,7 @@ const UPLOAD_CT = [
   "multipart/form-data",
   "application/vnd.openxmlformats",      // xlsx
   "application/octet-stream",            // raw binary
-  "application/x-www-form-urlencoded",   // rare but possible
+  // Note: x-www-form-urlencoded intentionally excluded — too broad (used by all regular forms)
 ];
 
 function isUploadRequest(ct, hasPostData) {
@@ -173,10 +173,11 @@ function checkAndSave(requestId, url, headers, tabId, hasPostData = false) {
   const ct = headers["content-type"] || headers["Content-Type"] || "";
 
   // Skip known analytics/tracking regardless of content-type
-  if (/clarity|analytics|beacon|rum|gtag|facebook|sentry|datadog|hotjar|logrocket/i.test(url)) return;
+  if (/clarity|analytics|beacon|rum|gtag|facebook|sentry|datadog|hotjar|logrocket|google\.|googleadservices|doubleclick|googlesyndication|googletagmanager|bing\.com|yahoo|twitter\.com|tiktok|snapchat/i.test(url)) return;
 
   // Must look like a file upload by content-type (or have a body + upload-like URL)
-  const uploadUrl = /upload|deliver|file|xlsx|attach|submit/i.test(url);
+  // "submit" removed — too broad (Google GA uses it)
+  const uploadUrl = /upload|deliver|\.xlsx|attach|file[_-]?upload|importFile/i.test(url);
   if (!isUploadRequest(ct, hasPostData) && !uploadUrl) return;
 
   console.log("[Z2U-debugger] ✅ Upload candidate:", url, "| CT:", ct);
