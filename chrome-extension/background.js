@@ -49,9 +49,12 @@ chrome.debugger.onEvent.addListener(function onDebugEvent(source, method, params
   if (method === "Network.requestWillBeSent") {
     const req = params.request;
     if (req.method !== "POST") return;
-    if (!/z2u\.com/i.test(req.url)) return;
-    if (/cdn-cgi|beacon|rum|ping|track|livechat|ws/i.test(req.url)) return;
-    console.log("[Z2U-debugger] POST observed:", req.url);
+
+    // Log EVERY POST so we can diagnose from the Service Worker console
+    const ct = (req.headers || {})["content-type"] || (req.headers || {})["Content-Type"] || "(no-ct)";
+    console.log("[Z2U-debugger] POST:", req.url, "| CT:", ct, "| hasPostData:", req.hasPostData);
+
+    // Store for ExtraInfo cross-reference (headers may arrive in secondary event)
     pendingRequests.set(params.requestId, { url: req.url });
     checkAndSave(params.requestId, req.url, req.headers || {});
     return;
@@ -61,7 +64,10 @@ chrome.debugger.onEvent.addListener(function onDebugEvent(source, method, params
   if (method === "Network.requestWillBeSentExtraInfo") {
     const pending = pendingRequests.get(params.requestId);
     if (!pending) return;
-    checkAndSave(params.requestId, pending.url, params.headers || {});
+    const hdrs = params.headers || {};
+    const ct = hdrs["content-type"] || hdrs["Content-Type"] || "";
+    if (ct) console.log("[Z2U-debugger] ExtraInfo CT for", pending.url, ":", ct);
+    checkAndSave(params.requestId, pending.url, hdrs);
     return;
   }
 
@@ -84,9 +90,10 @@ chrome.debugger.onDetach.addListener((source) => {
 
 function checkAndSave(requestId, url, headers) {
   const ct = headers["content-type"] || headers["Content-Type"] || "";
+  // Accept multipart uploads to ANY domain (Z2U may upload to S3/GCS/Azure)
   if (!ct.toLowerCase().includes("multipart/form-data")) return;
 
-  console.log("[Z2U-debugger] ✅ File upload intercepted:", url, "CT:", ct);
+  console.log("[Z2U-debugger] ✅ Multipart POST to:", url, "| CT:", ct);
   pendingRequests.delete(requestId);
 
   const tid = captureTabId; // snapshot before stopCaptureMode clears it
