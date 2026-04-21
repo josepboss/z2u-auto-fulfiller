@@ -22,7 +22,8 @@ captureBtn.addEventListener("click", async () => {
   captureBtn.textContent = "⏹ Stop Capture Mode";
   captureBtn.style.background = "#dc2626";
   captureMsg.style.color = "#7dd3fc";
-  captureMsg.textContent = "Listening… do your manual upload on Z2U now.";
+  const tabs = resp.tabCount || 1;
+  captureMsg.textContent = `Listening on ${tabs} tab(s)… do your upload now.`;
 });
 
 // Listen for capture results from the background
