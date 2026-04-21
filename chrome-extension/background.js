@@ -30,6 +30,9 @@ chrome.storage.session.get(["captureTabIds", "captureActive"], async (d) => {
       captureTabIds.add(tid);
       try {
         await chrome.debugger.sendCommand({ tabId: tid }, "Network.enable");
+        await chrome.debugger.sendCommand({ tabId: tid }, "Fetch.enable", {
+          patterns: [{ requestStage: "Request" }],
+        });
         console.log("[Z2U-debugger] Restored capture on tab", tid);
       } catch (e) {
         console.warn("[Z2U-debugger] Could not restore tab", tid, ":", e.message);
@@ -81,13 +84,14 @@ function handleDebugEvent(source, method, params) {
 
   if (method === "Network.requestWillBeSent") {
     const req = params.request;
-    if (req.method !== "POST") return;
+    // Skip methods that never carry a file upload
+    if (["GET", "HEAD", "OPTIONS", "CONNECT", "TRACE"].includes(req.method)) return;
 
     const ct = (req.headers || {})["content-type"] || (req.headers || {})["Content-Type"] || "(no-ct)";
-    console.log("[Z2U-debugger] POST:", req.url, "| CT:", ct, "| hasPostData:", req.hasPostData);
+    console.log(`[Z2U-debugger] ${req.method}:`, req.url, "| CT:", ct, "| hasPostData:", req.hasPostData);
 
-    pendingRequests.set(params.requestId, { url: req.url, tabId });
-    checkAndSave(params.requestId, req.url, req.headers || {}, tabId);
+    pendingRequests.set(params.requestId, { url: req.url, tabId, hasPostData: req.hasPostData });
+    checkAndSave(params.requestId, req.url, req.headers || {}, tabId, req.hasPostData);
     return;
   }
 
@@ -103,6 +107,39 @@ function handleDebugEvent(source, method, params) {
 
   if (method === "Network.responseReceived" || method === "Network.loadingFailed") {
     pendingRequests.delete(params.requestId);
+    return;
+  }
+
+  // Fetch domain — intercepts ALL requests before they're sent
+  // MUST call Fetch.continueRequest immediately or the page freezes
+  if (method === "Fetch.requestPaused") {
+    const req = params.request;
+    // Always resume the request FIRST
+    chrome.debugger.sendCommand({ tabId }, "Fetch.continueRequest", {
+      requestId: params.requestId,
+    }).catch(() => {});
+
+    if (!["GET", "HEAD", "OPTIONS", "CONNECT", "TRACE"].includes(req.method)) {
+      const ct = (req.headers || {})["content-type"] || (req.headers || {})["Content-Type"] || "(no-ct)";
+      console.log(`[Z2U-fetch] ${req.method}:`, req.url, "| CT:", ct, "| postData:", !!params.postData);
+      // Use postData available directly in Fetch.requestPaused
+      const hdrs = req.headers || {};
+      if (params.postData) {
+        // Body is available — check inline without a second roundtrip
+        const boundary = (hdrs["content-type"] || hdrs["Content-Type"] || "").match(/boundary=([^;,\s]+)/i);
+        if (boundary) {
+          saveEndpoint(req.url, parseMultipartFields(params.postData, hdrs["content-type"] || hdrs["Content-Type"] || ""));
+          stopCaptureMode();
+          return;
+        }
+      }
+      // No inline body — use normal checkAndSave with the network requestId if available
+      if (params.networkId) {
+        checkAndSave(params.networkId, req.url, hdrs, tabId, true);
+      } else {
+        checkAndSave(params.requestId, req.url, hdrs, tabId, true);
+      }
+    }
   }
 }
 
@@ -120,12 +157,29 @@ chrome.debugger.onDetach.addListener((source) => {
   }
 });
 
-function checkAndSave(requestId, url, headers, tabId) {
-  const ct = headers["content-type"] || headers["Content-Type"] || "";
-  // Accept multipart uploads to ANY domain (Z2U may upload to S3/GCS/Azure)
-  if (!ct.toLowerCase().includes("multipart/form-data")) return;
+const UPLOAD_CT = [
+  "multipart/form-data",
+  "application/vnd.openxmlformats",      // xlsx
+  "application/octet-stream",            // raw binary
+  "application/x-www-form-urlencoded",   // rare but possible
+];
 
-  console.log("[Z2U-debugger] ✅ Multipart POST to:", url, "| CT:", ct);
+function isUploadRequest(ct, hasPostData) {
+  if (!ct && !hasPostData) return false;
+  return UPLOAD_CT.some((t) => ct.toLowerCase().includes(t));
+}
+
+function checkAndSave(requestId, url, headers, tabId, hasPostData = false) {
+  const ct = headers["content-type"] || headers["Content-Type"] || "";
+
+  // Skip known analytics/tracking regardless of content-type
+  if (/clarity|analytics|beacon|rum|gtag|facebook|sentry|datadog|hotjar|logrocket/i.test(url)) return;
+
+  // Must look like a file upload by content-type (or have a body + upload-like URL)
+  const uploadUrl = /upload|deliver|file|xlsx|attach|submit/i.test(url);
+  if (!isUploadRequest(ct, hasPostData) && !uploadUrl) return;
+
+  console.log("[Z2U-debugger] ✅ Upload candidate:", url, "| CT:", ct);
   pendingRequests.delete(requestId);
   stopCaptureMode();
 
@@ -178,11 +232,15 @@ async function startCaptureMode() {
     }
     try {
       await chrome.debugger.sendCommand({ tabId: tab.id }, "Network.enable");
+      // Also enable Fetch domain: catches PUT/PATCH and requests Network misses
+      await chrome.debugger.sendCommand({ tabId: tab.id }, "Fetch.enable", {
+        patterns: [{ requestStage: "Request" }],
+      });
       captureTabIds.add(tab.id);
       attached.push(tab.id);
       console.log("[Z2U-debugger] Attached to tab", tab.id, tab.url);
     } catch (e) {
-      console.warn("[Z2U-debugger] Network.enable failed on tab", tab.id, ":", e.message);
+      console.warn("[Z2U-debugger] Enable failed on tab", tab.id, ":", e.message);
       chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
     }
   }
