@@ -13,77 +13,99 @@ chrome.storage.local.get(["z2uUploadEndpoint"], (d) => {
 });
 
 // ── Debugger-based upload URL capture ────────────────────────────────────────
-// Uses Chrome DevTools Protocol (CDP) Network events — captures every request
-// at the browser level regardless of XHR, fetch, iframe, web worker, etc.
-// No false positives: filters by z2u.com domain + multipart Content-Type.
-const CAPTURE = { tabId: null, active: false, timeoutId: null };
+// KEY DESIGN: listener is registered at TOP LEVEL so it survives MV3 service-
+// worker restarts. Capture state is persisted in chrome.storage.session so it
+// is restored automatically when the SW wakes back up.
+// A keep-alive alarm fires every 20 s during capture to prevent SW termination.
 
-// Track pending requests so requestWillBeSentExtraInfo can match them
+let captureTabId  = null;   // restored from session storage on startup
+let captureActive = false;
+
+// ── Restore state on every SW startup ───────────────────────────────────────
+chrome.storage.session.get(["captureTabId", "captureActive"], async (d) => {
+  if (d.captureActive && d.captureTabId) {
+    captureTabId  = d.captureTabId;
+    captureActive = true;
+    console.log("[Z2U-debugger] Restored capture mode, tab", captureTabId);
+    // Re-enable Network domain in case Chrome dropped the CDP session on SW restart
+    try {
+      await chrome.debugger.sendCommand({ tabId: captureTabId }, "Network.enable");
+      console.log("[Z2U-debugger] Network.enable re-applied after SW restart.");
+    } catch (e) {
+      // Debugger was detached — clear state
+      console.warn("[Z2U-debugger] Could not re-enable Network after restart:", e.message);
+      captureActive = false;
+      chrome.storage.session.remove(["captureTabId", "captureActive"]);
+    }
+  }
+});
+
+// ── TOP-LEVEL listener: survives SW restarts ─────────────────────────────────
 const pendingRequests = new Map();
 
-function onDebugEvent(source, method, params) {
-  if (!CAPTURE.active || source.tabId !== CAPTURE.tabId) return;
+chrome.debugger.onEvent.addListener(function onDebugEvent(source, method, params) {
+  if (!captureActive || source.tabId !== captureTabId) return;
 
-  // Primary event — always fires; capture URL + requestId
   if (method === "Network.requestWillBeSent") {
     const req = params.request;
     if (req.method !== "POST") return;
     if (!/z2u\.com/i.test(req.url)) return;
-    if (/cdn-cgi|beacon|rum|ping|track|livechat|chat|ws/i.test(req.url)) return;
-    // Store for ExtraInfo cross-reference
-    pendingRequests.set(params.requestId, { url: req.url, headers: req.headers || {} });
-    // Check Content-Type now (may already be here)
+    if (/cdn-cgi|beacon|rum|ping|track|livechat|ws/i.test(req.url)) return;
+    console.log("[Z2U-debugger] POST observed:", req.url);
+    pendingRequests.set(params.requestId, { url: req.url });
     checkAndSave(params.requestId, req.url, req.headers || {});
     return;
   }
 
-  // Secondary event — Chrome puts the real headers (including Content-Type) here
+  // Chrome often puts Content-Type here instead of requestWillBeSent
   if (method === "Network.requestWillBeSentExtraInfo") {
     const pending = pendingRequests.get(params.requestId);
     if (!pending) return;
-    const headers = params.headers || {};
-    checkAndSave(params.requestId, pending.url, headers);
+    checkAndSave(params.requestId, pending.url, params.headers || {});
     return;
   }
 
-  // Cleanup finished requests
   if (method === "Network.responseReceived" || method === "Network.loadingFailed") {
     pendingRequests.delete(params.requestId);
   }
-}
+});
+
+// Clear capture state if user closes/refreshes the Z2U tab
+chrome.debugger.onDetach.addListener((source) => {
+  if (source.tabId === captureTabId) {
+    console.log("[Z2U-debugger] Debugger detached — capture stopped.");
+    captureActive = false;
+    captureTabId  = null;
+    chrome.storage.session.remove(["captureTabId", "captureActive"]);
+    chrome.alarms.clear("capture_keepalive");
+    chrome.runtime.sendMessage({ type: "CAPTURE_STOPPED" }).catch(() => {});
+  }
+});
 
 function checkAndSave(requestId, url, headers) {
   const ct = headers["content-type"] || headers["Content-Type"] || "";
-  // Any POST with a body that looks like a file upload
   if (!ct.toLowerCase().includes("multipart/form-data")) return;
 
-  console.log("[Z2U-debugger] ✅ Multipart upload intercepted:", url, "CT:", ct);
+  console.log("[Z2U-debugger] ✅ File upload intercepted:", url, "CT:", ct);
   pendingRequests.delete(requestId);
 
-  chrome.debugger.sendCommand(
-    { tabId: CAPTURE.tabId },
-    "Network.getRequestPostData",
-    { requestId }
-  ).then((resp) => {
-    saveEndpoint(url, parseMultipartFields(resp?.postData || "", ct));
-  }).catch(() => {
-    saveEndpoint(url, [{ key: "file", type: "file" }]);
-  });
-
+  const tid = captureTabId; // snapshot before stopCaptureMode clears it
   stopCaptureMode();
+
+  chrome.debugger.sendCommand({ tabId: tid }, "Network.getRequestPostData", { requestId })
+    .then((r) => saveEndpoint(url, parseMultipartFields(r?.postData || "", ct)))
+    .catch(() => saveEndpoint(url, [{ key: "file", type: "file" }]));
 }
 
 function parseMultipartFields(postData, contentType) {
   const fields = [];
   const bm = contentType.match(/boundary=([^;,\s]+)/i);
   if (!bm) return [{ key: "file", type: "file" }];
-  const sep = "--" + bm[1].trim();
-  for (const part of postData.split(sep)) {
+  for (const part of postData.split("--" + bm[1].trim())) {
     const m = part.match(/Content-Disposition: form-data; name="([^"]+)"(?:; filename="([^"]+)")?/i);
     if (!m) continue;
-    if (m[2]) {
-      fields.push({ key: m[1], type: "file" });
-    } else {
+    if (m[2]) fields.push({ key: m[1], type: "file" });
+    else {
       const v = part.split(/\r?\n\r?\n/);
       fields.push({ key: m[1], type: "string", value: v.length > 1 ? v[1].trim() : "" });
     }
@@ -109,36 +131,38 @@ async function startCaptureMode() {
   try {
     await chrome.debugger.attach({ tabId: tab.id }, "1.3");
   } catch (e) {
-    return { ok: false, error: `Debugger attach failed: ${e.message}` };
+    // Already attached is fine — just continue
+    if (!e.message.includes("already attached")) {
+      return { ok: false, error: `Debugger attach failed: ${e.message}` };
+    }
   }
-
   try {
     await chrome.debugger.sendCommand({ tabId: tab.id }, "Network.enable");
   } catch (e) {
-    await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
     return { ok: false, error: `Network.enable failed: ${e.message}` };
   }
 
-  CAPTURE.tabId  = tab.id;
-  CAPTURE.active = true;
-  chrome.debugger.onEvent.addListener(onDebugEvent);
+  captureTabId  = tab.id;
+  captureActive = true;
+  await chrome.storage.session.set({ captureTabId: tab.id, captureActive: true });
 
-  // Auto-stop after 3 min if user forgets
-  CAPTURE.timeoutId = setTimeout(() => stopCaptureMode(), 3 * 60 * 1000);
-  console.log("[Z2U-debugger] Capture mode started on tab", tab.id, tab.url);
+  // Keep-alive alarm: wakes SW every 20 s so it doesn't die during capture
+  chrome.alarms.create("capture_keepalive", { periodInMinutes: 20 / 60 });
+
+  console.log("[Z2U-debugger] Capture started on tab", tab.id, tab.url);
   return { ok: true };
 }
 
 function stopCaptureMode() {
-  if (!CAPTURE.active) return;
-  CAPTURE.active = false;
-  if (CAPTURE.timeoutId) clearTimeout(CAPTURE.timeoutId);
-  chrome.debugger.onEvent.removeListener(onDebugEvent);
-  const tid = CAPTURE.tabId;
-  CAPTURE.tabId = null;
+  if (!captureActive) return;
+  captureActive = false;
+  const tid = captureTabId;
+  captureTabId  = null;
+  chrome.storage.session.remove(["captureTabId", "captureActive"]);
+  chrome.alarms.clear("capture_keepalive");
   if (tid) chrome.debugger.detach({ tabId: tid }).catch(() => {});
   chrome.runtime.sendMessage({ type: "CAPTURE_STOPPED" }).catch(() => {});
-  console.log("[Z2U-debugger] Capture mode stopped.");
+  console.log("[Z2U-debugger] Capture stopped.");
 }
 
 function randomBetween(min, max) {
@@ -160,6 +184,12 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  // Keep-alive ping — just waking the service worker is enough
+  if (alarm.name === "capture_keepalive") {
+    console.log("[Z2U-debugger] Keep-alive ping — SW still active, captureActive=", captureActive);
+    return;
+  }
+
   if (alarm.name !== "refresh_orders") return;
 
   // Query for both z2u.com and www.z2u.com variants
