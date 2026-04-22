@@ -111,14 +111,17 @@ function handleDebugEvent(source, method, params) {
   }
 
   // Fetch domain — intercepts ALL requests before they're sent
-  // MUST call Fetch.continueRequest immediately or the page freezes
+  // MUST call Fetch.continueRequest for EVERY paused request or the page freezes.
+  // This runs even after captureActive=false (during the drain window).
   if (method === "Fetch.requestPaused") {
     const req = params.request;
-    // Always resume the request FIRST
+    // Always resume the request FIRST — no conditions, no exceptions
     chrome.debugger.sendCommand({ tabId }, "Fetch.continueRequest", {
       requestId: params.requestId,
     }).catch(() => {});
 
+    // Only analyze the request if we're still actively watching for uploads
+    if (!captureActive) return;
     if (!["GET", "HEAD", "OPTIONS", "CONNECT", "TRACE"].includes(req.method)) {
       const ct = (req.headers || {})["content-type"] || (req.headers || {})["Content-Type"] || "(no-ct)";
       console.log(`[Z2U-fetch] ${req.method}:`, req.url, "| CT:", ct, "| postData:", !!params.postData);
@@ -129,7 +132,8 @@ function handleDebugEvent(source, method, params) {
         const boundary = (hdrs["content-type"] || hdrs["Content-Type"] || "").match(/boundary=([^;,\s]+)/i);
         if (boundary) {
           saveEndpoint(req.url, parseMultipartFields(params.postData, hdrs["content-type"] || hdrs["Content-Type"] || ""));
-          stopCaptureMode();
+          // 4s delay: keep Fetch intercept alive so upload response can complete
+          stopCaptureMode(4000);
           return;
         }
       }
@@ -182,7 +186,8 @@ function checkAndSave(requestId, url, headers, tabId, hasPostData = false) {
 
   console.log("[Z2U-debugger] ✅ Upload candidate:", url, "| CT:", ct);
   pendingRequests.delete(requestId);
-  stopCaptureMode();
+  // Delay detach 4s so the upload completes before we release Fetch intercept
+  stopCaptureMode(4000);
 
   chrome.debugger.sendCommand({ tabId }, "Network.getRequestPostData", { requestId })
     .then((r) => {
@@ -266,17 +271,29 @@ async function startCaptureMode() {
   return { ok: true, tabCount: attached.length };
 }
 
-function stopCaptureMode() {
+function stopCaptureMode(delayDetachMs = 0) {
   if (!captureActive) return;
+  // Phase 1 (immediate): stop watching for new uploads
   captureActive = false;
-  const tids = [...captureTabIds];
-  captureTabIds.clear();
-  captureTabId = null;
+  captureTabId  = null;
   chrome.storage.session.remove(["captureTabIds", "captureActive"]);
   chrome.alarms.clear("capture_keepalive");
-  for (const tid of tids) chrome.debugger.detach({ tabId: tid }).catch(() => {});
   chrome.runtime.sendMessage({ type: "CAPTURE_STOPPED" }).catch(() => {});
-  console.log("[Z2U-debugger] Capture stopped, detached tabs:", tids);
+  console.log("[Z2U-debugger] Capture watching stopped. Detach in", delayDetachMs, "ms.");
+
+  // Phase 2 (delayed): detach debugger AFTER the upload request has time to complete
+  // If Fetch.enable is active, detaching immediately cancels all paused requests.
+  const tids = [...captureTabIds];
+  const doDetach = () => {
+    captureTabIds.clear();
+    for (const tid of tids) chrome.debugger.detach({ tabId: tid }).catch(() => {});
+    console.log("[Z2U-debugger] Detached tabs:", tids);
+  };
+  if (delayDetachMs > 0) {
+    setTimeout(doDetach, delayDetachMs);
+  } else {
+    doDetach();
+  }
 }
 
 function randomBetween(min, max) {
