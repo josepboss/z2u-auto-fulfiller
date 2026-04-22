@@ -89,11 +89,21 @@ document.getElementById("clearBtn").addEventListener("click", async () => {
 
 async function refreshEndpointUI() {
   const box = document.getElementById("endpointBox");
-  const { z2uUploadEndpoint } = await chrome.storage.local.get("z2uUploadEndpoint");
-  if (z2uUploadEndpoint?.url) {
-    box.textContent = `Upload endpoint: ✅ captured`;
+  const { z2uUploadEndpoint: ep } = await chrome.storage.local.get("z2uUploadEndpoint");
+  if (ep?.url) {
+    const fileField = ep.fields?.find((f) => f.type === "file")?.key;
+    const probe = ep.probeFields;
+    const fieldInfo = probe
+      ? "🔍 probing upfile/file/upload…"
+      : fileField
+        ? `file field: "${fileField}"`
+        : "field: unknown";
+    box.innerHTML = `Upload endpoint: ✅ captured<br><span style="color:#94a3b8;font-size:.7rem;">${ep.url.slice(0,55)}…<br>${fieldInfo}</span>`;
     box.style.color = "#6ee7b7";
-    document.getElementById("uploadUrl").value = z2uUploadEndpoint.url;
+    document.getElementById("uploadUrl").value = ep.url;
+    if (fileField && !probe) {
+      document.getElementById("fileField").value = fileField;
+    }
   } else {
     box.textContent = "Upload endpoint: ⏳ not yet — do one manual upload";
     box.style.color = "#fcd34d";
@@ -110,7 +120,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   refreshPauseUI();
   refreshEndpointUI();
 
-  document.getElementById("fileField").value = data.z2uFileField || "file";
+  document.getElementById("fileField").value = data.z2uFileField || "upfile";
 });
 
 document.getElementById("saveBtn").addEventListener("click", async () => {
@@ -121,14 +131,11 @@ document.getElementById("saveBtn").addEventListener("click", async () => {
   const toSave = { serverUrl: url || "http://localhost:3000", z2uFileField: fileField };
 
   if (uploadUrl) {
-    // Build a minimal endpoint object — directApiUpload fills in orderId at runtime
     toSave.z2uUploadEndpoint = {
-      url:    uploadUrl,
-      method: "POST",
-      fields: [
-        { key: fileField, type: "file" },
-      ],
-      // Flag so directApiUpload knows to also inject the orderId field
+      url:         uploadUrl,
+      method:      "POST",
+      fields:      [{ key: fileField, type: "file" }],
+      probeFields: false,  // user specified the field name explicitly
       manualConfig: true,
     };
   }

@@ -185,14 +185,20 @@ function checkAndSave(requestId, url, headers, tabId, hasPostData = false) {
   stopCaptureMode();
 
   chrome.debugger.sendCommand({ tabId }, "Network.getRequestPostData", { requestId })
-    .then((r) => saveEndpoint(url, parseMultipartFields(r?.postData || "", ct)))
-    .catch(() => saveEndpoint(url, [{ key: "file", type: "file" }]));
+    .then((r) => {
+      const parsed = parseMultipartFields(r?.postData || "", ct);
+      saveEndpoint(url, parsed);
+    })
+    .catch(() => saveEndpoint(url, null));
 }
+
+// Known Z2U file field names in priority order (matches DOM id="upfile" / name="upload")
+const Z2U_FILE_FIELDS = ["upfile", "file", "upload", "excel", "formFile"];
 
 function parseMultipartFields(postData, contentType) {
   const fields = [];
   const bm = contentType.match(/boundary=([^;,\s]+)/i);
-  if (!bm) return [{ key: "file", type: "file" }];
+  if (!bm) return null; // null = "not parsed, use probing fallback"
   for (const part of postData.split("--" + bm[1].trim())) {
     const m = part.match(/Content-Disposition: form-data; name="([^"]+)"(?:; filename="([^"]+)")?/i);
     if (!m) continue;
@@ -202,11 +208,12 @@ function parseMultipartFields(postData, contentType) {
       fields.push({ key: m[1], type: "string", value: v.length > 1 ? v[1].trim() : "" });
     }
   }
-  return fields.length ? fields : [{ key: "file", type: "file" }];
+  return fields.length ? fields : null;
 }
 
 function saveEndpoint(url, fields) {
-  const endpoint = { url, method: "POST", fields };
+  // fields === null means CDP couldn't decode the body → use field-probing mode
+  const endpoint = { url, method: "POST", fields: fields || null, probeFields: !fields };
   chrome.storage.local.set({ z2uUploadEndpoint: endpoint }, () => {
     chrome.action.setBadgeText({ text: "✓" });
     chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });

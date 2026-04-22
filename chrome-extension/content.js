@@ -352,68 +352,105 @@
   // Uses the endpoint captured by injected.js from a previous manual/successful
   // upload.  Replays the exact same FormData structure with our filled file,
   // substituting the orderId field with the current order's ID.
+  // Z2U file field names to probe when CDP couldn't decode the multipart body
+  const Z2U_FILE_FIELDS = ["upfile", "file", "upload", "excel", "formFile"];
+
+  async function tryUploadWithField(url, method, fieldName, extraFields, file, orderId) {
+    const formData = new FormData();
+    // Attach extra string fields first (order_id, etc.)
+    for (const field of (extraFields || [])) {
+      if (field.type !== "file") {
+        const val = /^Z\d+$/i.test(field.value) ? orderId : (field.value || "");
+        formData.append(field.key, val);
+      }
+    }
+    // If orderId and no explicit orderId/order_id field was captured, inject it
+    if (orderId && !(extraFields || []).some((f) => /order_?id/i.test(f.key))) {
+      formData.append("order_id", orderId);
+    }
+    formData.append(fieldName, file, file.name);
+    log("UPLOAD-API", `  Trying file field="${fieldName}" + ${(extraFields||[]).filter(f=>f.type!=="file").map(f=>f.key).join(",")}`);
+
+    const res = await fetch(url, { method: method || "POST", body: formData, credentials: "include" });
+    const text = await res.text();
+    log("UPLOAD-API", `  HTTP ${res.status} → ${text.slice(0, 300)}`);
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+
+    // Parse Z2U's JSON response
+    let json = null;
+    try { json = JSON.parse(text); } catch (_) { /* not JSON */ }
+
+    if (json) {
+      const code = json.code ?? json.status ?? json.errCode;
+      // code 0, 200, 1, true → success; anything else → failure
+      const isOkCode = code === 0 || code === 200 || code === "0" || code === "200" || code === true || code === 1;
+      if (!isOkCode) {
+        throw new Error(`app-error code=${code} msg=${json.msg ?? json.message ?? "?"}`);
+      }
+      // Extra check: successful Z2U uploads return a non-empty data field
+      // If data is empty/null and msg suggests no file, treat as failure
+      const msg = (json.msg || json.message || "").toLowerCase();
+      if (/select|no file|missing|require|please/i.test(msg)) {
+        throw new Error(`app-error: "${json.msg ?? json.message}"`);
+      }
+      // data field should be a URL or non-empty object for real uploads
+      const hasData = json.data !== null && json.data !== undefined && json.data !== "" && json.data !== false;
+      log("UPLOAD-API", `  code=${code} data=${JSON.stringify(json.data)?.slice(0,100)} hasData=${hasData}`);
+      return hasData;
+    }
+
+    // Non-JSON response — if we got 200 and it's not an HTML error page, assume OK
+    return !text.toLowerCase().includes("<html") && !text.toLowerCase().includes("error");
+  }
+
   async function directApiUpload(file, orderId) {
     const stored = await new Promise((r) =>
       chrome.storage.local.get(["z2uUploadEndpoint"], (d) => r(d.z2uUploadEndpoint))
     );
 
     if (!stored?.url) {
-      warn("UPLOAD-API", "No upload endpoint saved yet. Falling back to UI. " +
-        "To teach the extension: manually upload a file on any order page and it will be captured automatically.");
-      return null; // signal: use UI fallback
+      warn("UPLOAD-API", "No upload endpoint saved — falling back to UI.");
+      return null;
     }
 
-    log("UPLOAD-API", `Saved endpoint: ${stored.method} ${stored.url}`);
-    log("UPLOAD-API", `Fields template: ${JSON.stringify(stored.fields)}`);
+    log("UPLOAD-API", `Endpoint: ${stored.method || "POST"} ${stored.url}`);
+    log("UPLOAD-API", `probeFields=${stored.probeFields} fields=${JSON.stringify(stored.fields)}`);
 
-    const formData = new FormData();
-    for (const field of stored.fields) {
-      if (field.type === "file") {
-        formData.append(field.key, file, file.name);
-        log("UPLOAD-API", `  [file] "${field.key}" = ${file.name} (${file.size} bytes)`);
-      } else {
-        // Replace any Z2U order ID in saved values with the current orderId
-        const val = /^Z\d+$/i.test(field.value) ? orderId : field.value;
-        formData.append(field.key, val);
-        log("UPLOAD-API", `  [str]  "${field.key}" = "${val}"`);
+    // ── Case 1: We have parsed fields from CDP (multipart boundary decoded) ───
+    if (!stored.probeFields && stored.fields?.length) {
+      const fileField = stored.fields.find((f) => f.type === "file");
+      const fieldName = fileField?.key || "upfile";
+      const extraFields = stored.fields.filter((f) => f.type !== "file");
+      log("UPLOAD-API", `Using captured field name: "${fieldName}"`);
+      const ok = await tryUploadWithField(stored.url, stored.method, fieldName, extraFields, file, orderId);
+      if (!ok) throw new Error(`Upload returned success code but data was empty — field "${fieldName}" may be wrong`);
+      return true;
+    }
+
+    // ── Case 2: probeFields=true — CDP couldn't decode the body, try each field ─
+    // Also handles legacy entries where fields=null
+    log("UPLOAD-API", "Probing field names (CDP body was not decodable)…");
+    const extraFields = (stored.fields || []).filter((f) => f.type !== "file");
+    const candidates = stored.probeFields ? Z2U_FILE_FIELDS : ["upfile", "file", "upload"];
+
+    for (const fieldName of candidates) {
+      try {
+        const ok = await tryUploadWithField(stored.url, stored.method, fieldName, extraFields, file, orderId);
+        if (ok) {
+          log("UPLOAD-API", `✅ Field "${fieldName}" worked! Saving for future orders.`);
+          // Update stored endpoint with the working field name so we don't probe again
+          const updatedFields = [...extraFields, { key: fieldName, type: "file" }];
+          chrome.storage.local.set({ z2uUploadEndpoint: { ...stored, fields: updatedFields, probeFields: false } });
+          return true;
+        }
+        warn("UPLOAD-API", `Field "${fieldName}": success code but data empty — trying next`);
+      } catch (e) {
+        warn("UPLOAD-API", `Field "${fieldName}" failed: ${e.message} — trying next`);
       }
     }
 
-    // When manually configured (popup URL paste), auto-inject the orderId
-    // since we don't know the exact field name — try the two common ones.
-    if (stored.manualConfig && orderId) {
-      formData.append("orderId",  orderId);
-      formData.append("order_id", orderId);
-      log("UPLOAD-API", `  [str]  "orderId" = "${orderId}" (auto-injected for manual config)`);
-    }
-
-    log("UPLOAD-API", "Posting...");
-    const res = await fetch(stored.url, {
-      method:      stored.method,
-      body:        formData,
-      credentials: "include",
-    });
-
-    const text = await res.text();
-    log("UPLOAD-API", `Response: HTTP ${res.status} → ${text.slice(0, 400)}`);
-
-    if (!res.ok) {
-      throw new Error(`Upload API HTTP ${res.status}: ${text.slice(0, 200)}`);
-    }
-
-    // Detect application-level failures (Z2U wraps errors in 200 responses)
-    try {
-      const json = JSON.parse(text);
-      const code = json.code ?? json.status ?? json.errCode ?? 0;
-      if (code !== 0 && code !== 200 && code !== "0" && code !== "200" && code !== true && code !== 1) {
-        throw new Error(`Upload API app-error: code=${code} msg=${json.msg ?? json.message ?? "?"}`);
-      }
-    } catch (parseErr) {
-      if (parseErr.message.startsWith("Upload API")) throw parseErr;
-      // Not JSON — assume OK
-    }
-
-    return true;
+    throw new Error("All field name candidates failed. Falling back to UI approach.");
   }
 
   async function uploadAndConfirm(filledBytes, filename, quantity) {
