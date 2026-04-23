@@ -404,53 +404,91 @@
     return !text.toLowerCase().includes("<html") && !text.toLowerCase().includes("error");
   }
 
+  // Known Z2U upload endpoints to probe when stored/manual endpoint fails.
+  // These were captured via CDP from real Z2U upload sessions.
+  const Z2U_KNOWN_ENDPOINTS = [
+    { url: "https://www.z2u.com/sellOrder/uploadSellForm",    method: "POST" },
+    { url: "https://www.z2u.com/SellOrder/uploadSellForm",    method: "POST" },
+    { url: "https://www.z2u.com/sellOrder/uploadOrderImg.html", method: "POST" },
+    { url: "https://www.z2u.com/SellOrder/uploadOrderImg.html", method: "POST" },
+  ];
+
+  async function tryEndpoint(epUrl, epMethod, extraFields, file, orderId, label) {
+    for (const fieldName of Z2U_FILE_FIELDS) {
+      try {
+        const ok = await tryUploadWithField(epUrl, epMethod, fieldName, extraFields, file, orderId);
+        if (ok) {
+          log("UPLOAD-API", `✅ [${label}] field="${fieldName}" worked!`);
+          return fieldName;
+        }
+        warn("UPLOAD-API", `[${label}] field="${fieldName}": no data — trying next`);
+      } catch (e) {
+        warn("UPLOAD-API", `[${label}] field="${fieldName}" error: ${e.message}`);
+      }
+    }
+    return null;
+  }
+
   async function directApiUpload(file, orderId) {
     const stored = await new Promise((r) =>
       chrome.storage.local.get(["z2uUploadEndpoint"], (d) => r(d.z2uUploadEndpoint))
     );
 
-    if (!stored?.url) {
-      warn("UPLOAD-API", "No upload endpoint saved — falling back to UI.");
-      return null;
-    }
+    // ── Try stored endpoint first ─────────────────────────────────────────────
+    if (stored?.url) {
+      log("UPLOAD-API", `Stored endpoint: ${stored.method || "POST"} ${stored.url}`);
 
-    log("UPLOAD-API", `Endpoint: ${stored.method || "POST"} ${stored.url}`);
-    log("UPLOAD-API", `probeFields=${stored.probeFields} fields=${JSON.stringify(stored.fields)}`);
-
-    // ── Case 1: We have parsed fields from CDP (multipart boundary decoded) ───
-    if (!stored.probeFields && stored.fields?.length) {
-      const fileField = stored.fields.find((f) => f.type === "file");
-      const fieldName = fileField?.key || "upfile";
-      const extraFields = stored.fields.filter((f) => f.type !== "file");
-      log("UPLOAD-API", `Using captured field name: "${fieldName}"`);
-      const ok = await tryUploadWithField(stored.url, stored.method, fieldName, extraFields, file, orderId);
-      if (!ok) throw new Error(`Upload returned success code but data was empty — field "${fieldName}" may be wrong`);
-      return true;
-    }
-
-    // ── Case 2: probeFields=true — CDP couldn't decode the body, try each field ─
-    // Also handles legacy entries where fields=null
-    log("UPLOAD-API", "Probing field names (CDP body was not decodable)…");
-    const extraFields = (stored.fields || []).filter((f) => f.type !== "file");
-    const candidates = stored.probeFields ? Z2U_FILE_FIELDS : ["upfile", "file", "upload"];
-
-    for (const fieldName of candidates) {
-      try {
-        const ok = await tryUploadWithField(stored.url, stored.method, fieldName, extraFields, file, orderId);
-        if (ok) {
-          log("UPLOAD-API", `✅ Field "${fieldName}" worked! Saving for future orders.`);
-          // Update stored endpoint with the working field name so we don't probe again
-          const updatedFields = [...extraFields, { key: fieldName, type: "file" }];
+      // Case 1: CDP decoded the multipart body — we know the exact field name
+      if (!stored.probeFields && stored.fields?.length) {
+        const fileField  = stored.fields.find((f) => f.type === "file");
+        const fieldName  = fileField?.key || "upfile";
+        const extraFields = stored.fields.filter((f) => f.type !== "file");
+        log("UPLOAD-API", `Using captured field name: "${fieldName}"`);
+        try {
+          const ok = await tryUploadWithField(stored.url, stored.method, fieldName, extraFields, file, orderId);
+          if (ok) return true;
+          warn("UPLOAD-API", `Stored endpoint returned empty data — will probe fallbacks`);
+        } catch (e) {
+          warn("UPLOAD-API", `Stored endpoint failed: ${e.message} — will probe fallbacks`);
+        }
+      } else {
+        // Case 2: probe field names on stored endpoint
+        const extraFields = (stored.fields || []).filter((f) => f.type !== "file");
+        const winField = await tryEndpoint(stored.url, stored.method || "POST", extraFields, file, orderId, "stored");
+        if (winField) {
+          const updatedFields = [...extraFields, { key: winField, type: "file" }];
           chrome.storage.local.set({ z2uUploadEndpoint: { ...stored, fields: updatedFields, probeFields: false } });
           return true;
         }
-        warn("UPLOAD-API", `Field "${fieldName}": success code but data empty — trying next`);
-      } catch (e) {
-        warn("UPLOAD-API", `Field "${fieldName}" failed: ${e.message} — trying next`);
+        warn("UPLOAD-API", `All field probes failed on stored endpoint — trying known fallbacks`);
+      }
+    } else {
+      log("UPLOAD-API", "No stored endpoint — going straight to known fallbacks");
+    }
+
+    // ── Try known Z2U endpoints as fallbacks ──────────────────────────────────
+    // Skip any URL identical to the stored one (already tried above)
+    const storedUrl = stored?.url || "";
+    for (const ep of Z2U_KNOWN_ENDPOINTS) {
+      if (ep.url === storedUrl) continue;
+      log("UPLOAD-API", `Probing fallback: ${ep.method} ${ep.url}`);
+      const winField = await tryEndpoint(ep.url, ep.method, [], file, orderId, ep.url.split("/").pop());
+      if (winField) {
+        // Save the discovered endpoint so we use it directly next time
+        const saved = {
+          url: ep.url, method: ep.method,
+          fields: [{ key: winField, type: "file" }],
+          probeFields: false,
+        };
+        chrome.storage.local.set({ z2uUploadEndpoint: saved });
+        log("UPLOAD-API", `✅ Saved new endpoint: ${ep.url} / field="${winField}"`);
+        return true;
       }
     }
 
-    throw new Error("All field name candidates failed. Falling back to UI approach.");
+    // All endpoints exhausted — fall through to UI approach
+    warn("UPLOAD-API", "All known endpoints failed. Falling back to UI approach.");
+    return null;
   }
 
   async function uploadAndConfirm(filledBytes, filename, quantity) {
