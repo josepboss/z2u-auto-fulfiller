@@ -1,8 +1,8 @@
 // chat.js — Z2U /Chat page: monitor incoming messages → Telegram; reply from Telegram → Z2U
 // Completely independent of content.js (order fulfillment logic).
 (async () => {
-  const LOG  = (...a) => console.log("[Z2U-CHAT]",  ...a);
-  const WARN = (...a) => console.warn("[Z2U-CHAT]", ...a);
+  const LOG  = (...a) => console.log("[Z2U-CHAT]", ...a);
+  const WARN = (...a) => console.log("[Z2U-CHAT] ⚠", ...a); // log not warn — avoid chrome://extensions error panel entries
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   const handles = { poll: null, refresh: null, observer: null };
@@ -13,10 +13,11 @@
   }
 
   function shutdown(reason) {
-    WARN("Shutting down chat monitor:", reason);
-    if (handles.poll)     { clearInterval(handles.poll);   handles.poll = null; }
-    if (handles.refresh)  { clearTimeout(handles.refresh); handles.refresh = null; }
-    if (handles.observer) { handles.observer.disconnect(); handles.observer = null; }
+    // Do NOT log here — any console output from an invalidated extension context
+    // shows up as an error entry in chrome://extensions, which confuses the user.
+    if (handles.poll)     { try { clearInterval(handles.poll);    } catch {} handles.poll = null; }
+    if (handles.refresh)  { try { clearTimeout(handles.refresh);  } catch {} handles.refresh = null; }
+    if (handles.observer) { try { handles.observer.disconnect();  } catch {} handles.observer = null; }
   }
 
   async function getTgConfig() {
