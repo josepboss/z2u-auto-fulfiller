@@ -40,6 +40,14 @@
       ],
       "js": ["config.js", "content.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://z2u.com/Chat*",
+        "https://www.z2u.com/Chat*"
+      ],
+      "js": ["chat.js"],
+      "run_at": "document_idle"
     }
   ],
   "action": {

@@ -110,8 +110,43 @@ async function refreshEndpointUI() {
   }
 }
 
+// ── Telegram settings ────────────────────────────────────────────────────────
+document.getElementById("tgSaveBtn").addEventListener("click", async () => {
+  const token  = document.getElementById("tgToken").value.trim();
+  const chatId = document.getElementById("tgChatId").value.trim();
+  if (!token || !chatId) {
+    document.getElementById("tgMsg").textContent = "Both fields required.";
+    document.getElementById("tgMsg").style.color = "#fca5a5";
+    return;
+  }
+  await chrome.storage.local.set({ tgToken: token, tgChatId: chatId });
+  document.getElementById("tgMsg").textContent = "Saved!";
+  document.getElementById("tgMsg").style.color = "#6ee7b7";
+  setTimeout(() => (document.getElementById("tgMsg").textContent = ""), 2000);
+  await verifyTgBot(token, chatId);
+});
+
+async function verifyTgBot(token, chatId) {
+  const statusEl = document.getElementById("tgStatus");
+  statusEl.textContent = "Verifying bot…";
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const d = await r.json();
+    if (d.ok) {
+      statusEl.textContent = `✅ Bot: @${d.result.username}`;
+      statusEl.style.color = "#6ee7b7";
+    } else {
+      statusEl.textContent = `❌ ${d.description}`;
+      statusEl.style.color = "#fca5a5";
+    }
+  } catch {
+    statusEl.textContent = "❌ Could not reach Telegram";
+    statusEl.style.color = "#fca5a5";
+  }
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
-  const data = await chrome.storage.local.get(["serverUrl", "z2uUploadEndpoint", "z2uFileField"]);
+  const data = await chrome.storage.local.get(["serverUrl", "z2uUploadEndpoint", "z2uFileField", "tgToken", "tgChatId"]);
 
   const url = data.serverUrl || "http://localhost:3000";
   document.getElementById("serverUrl").value = url;
@@ -119,6 +154,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateStatus(url);
   refreshPauseUI();
   refreshEndpointUI();
+
+  // Restore Telegram fields
+  if (data.tgToken)  document.getElementById("tgToken").value  = data.tgToken;
+  if (data.tgChatId) document.getElementById("tgChatId").value = data.tgChatId;
+  if (data.tgToken && data.tgChatId) verifyTgBot(data.tgToken, data.tgChatId);
 
   document.getElementById("fileField").value = data.z2uFileField || "upfile";
 });
