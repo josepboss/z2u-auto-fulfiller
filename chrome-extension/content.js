@@ -626,6 +626,47 @@
       warn("UPLOAD", `[C2] Could not find any file input — SUBMIT will likely fail`);
     }
 
+    // ── Step C2.5: Fill any required note/text fields in the modal ───────────
+    // Z2U's upload modal includes a required "note" textarea. Leaving it blank
+    // causes Z2U to reject the submission with "Please input note".
+    {
+      const noteCtx = modalEl() || document;
+      const textInputs = Array.from(noteCtx.querySelectorAll(
+        'textarea, input[type="text"], input:not([type="file"]):not([type="submit"])' +
+        ':not([type="button"]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"])'
+      ));
+      for (const ti of textInputs) {
+        if (!ti.value || !ti.value.trim()) {
+          ti.value = "Delivered";
+          ti.dispatchEvent(new Event("input",  { bubbles: true }));
+          ti.dispatchEvent(new Event("change", { bubbles: true }));
+          // Drive React's own onChange so component state actually updates
+          const rk = Object.keys(ti).find(
+            k => k.startsWith("__reactProps") || k.startsWith("__reactInternals")
+          );
+          if (rk && typeof ti[rk]?.onChange === "function") {
+            ti[rk].onChange({
+              target: ti, currentTarget: ti, type: "change", bubbles: true,
+              nativeEvent: { target: ti },
+              preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
+            });
+          } else {
+            const fk = Object.keys(ti).find(k => k.startsWith("__reactFiber"));
+            const fn = fk && ti[fk]?.memoizedProps?.onChange;
+            if (typeof fn === "function") {
+              fn({
+                target: ti, currentTarget: ti, type: "change", bubbles: true,
+                nativeEvent: { target: ti },
+                preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
+              });
+            }
+          }
+          log("UPLOAD", `[C2.5] Filled note field tag=${ti.tagName} id="${ti.id}" name="${ti.name}"`);
+        }
+      }
+      await sleep(300);
+    }
+
     // ── Step C3: Click SUBMIT to upload the file first ────────────────────────
     // Z2U flow: Submit → file uploads → THEN the transactions quantity field appears.
     log("UPLOAD", `[C3] Looking for SUBMIT button to upload file…`);
@@ -661,8 +702,8 @@
         const txt = t.textContent?.trim() || "";
         if (txt) {
           log("UPLOAD", `[C3] Z2U toast: "${txt.slice(0, 200)}"`);
-          // "Please input note" is Z2U's toast when no file is registered in React state.
-          // Any toast message here is a sign the upload was NOT accepted.
+          // "Please input note" = Z2U requires a note textarea to be filled (Step C2.5 handles it).
+          // "Please select file" / similar = file injection failed. Any toast = upload NOT accepted.
           if (/input|note|select|file|upload|error|fail|invalid/i.test(txt)) {
             err("UPLOAD", `[C3] Upload rejected by Z2U: "${txt.slice(0, 200)}" — aborting to avoid false confirmation.`);
             return false;
