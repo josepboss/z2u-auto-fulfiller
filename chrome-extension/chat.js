@@ -219,28 +219,101 @@
   }
 
   // ── Send reply via Z2U chat UI ──────────────────────────────────────────────
+  // Helper: fire React's own onChange/onInput on an element so its internal
+  // state actually updates (plain dispatchEvent alone doesn't reach React).
+  function fireReactChange(el, value) {
+    // Try __reactProps first (React 17+)
+    const propKey = Object.keys(el).find(k => k.startsWith("__reactProps"));
+    if (propKey) {
+      const props = el[propKey];
+      const synth = {
+        target: el, currentTarget: el, type: "change", bubbles: true,
+        nativeEvent: { target: el, data: value },
+        preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
+      };
+      if (typeof props?.onChange === "function") { props.onChange(synth); return true; }
+      if (typeof props?.onInput  === "function") { props.onInput(synth);  return true; }
+    }
+    // Try __reactFiber (React 16)
+    const fiberKey = Object.keys(el).find(k => k.startsWith("__reactFiber") || k.startsWith("__reactInternals"));
+    if (fiberKey) {
+      const fiber = el[fiberKey];
+      const fn = fiber?.memoizedProps?.onChange || fiber?.memoizedProps?.onInput;
+      if (typeof fn === "function") {
+        fn({
+          target: el, currentTarget: el, type: "change", bubbles: true,
+          nativeEvent: { target: el, data: value },
+          preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
+        });
+        return true;
+      }
+    }
+    return false;
+  }
+
   async function sendReplyToUser(username, text) {
     const item = findConvByUsername(username);
     if (!item) { WARN(`Sidebar item for "${username}" not found`); return; }
 
+    // Click the conversation and wait up to 4 s for the input to appear
     item.click();
-    await sleep(800);
+    LOG(`Clicked "${username}" chat — waiting for message input…`);
 
-    const input = document.querySelector(
-      '[class*="messageInput"] textarea, [class*="chatInput"] textarea, ' +
-      '[class*="inputBox"] textarea, textarea[placeholder], ' +
-      'div[contenteditable="true"][class*="input"], ' +
-      'div[contenteditable="true"][class*="msg"], ' +
-      'div[contenteditable="true"][class*="chat"]'
-    );
-    if (!input) { WARN("Message input not found"); return; }
+    // Ordered selector cascade: specific → general; excludes sidebar elements
+    const INPUT_SELECTORS = [
+      '[class*="messageInput"] textarea',
+      '[class*="chatInput"] textarea',
+      '[class*="inputBox"] textarea',
+      '[class*="msgInput"] textarea',
+      '[class*="message-input"] textarea',
+      '[class*="chat-input"] textarea',
+      'div[contenteditable="true"][class*="input"]',
+      'div[contenteditable="true"][class*="msg"]',
+      'div[contenteditable="true"][class*="chat"]',
+      'div[contenteditable="true"][class*="editor"]',
+      'div[contenteditable="true"][class*="compose"]',
+      'div[contenteditable="true"][class*="text"]',
+      // Broad fallbacks: any visible contenteditable/textarea NOT inside the sidebar
+      'div[contenteditable="true"]',
+      'textarea',
+    ];
 
+    let input = null;
+    const deadline = Date.now() + 5000;
+    while (!input && Date.now() < deadline) {
+      for (const sel of INPUT_SELECTORS) {
+        for (const el of document.querySelectorAll(sel)) {
+          // Must be visible and NOT inside the conversation sidebar
+          if (!el.offsetParent) continue;
+          if (el.closest(
+            '[class*="sideBar"], [class*="sidebar"], [class*="chatList"], ' +
+            '[class*="chat-list"], aside, nav'
+          )) continue;
+          input = el;
+          break;
+        }
+        if (input) break;
+      }
+      if (!input) await sleep(300);
+    }
+
+    if (!input) { WARN(`Message input not found after 5 s for "${username}"`); return; }
+    LOG(`Found input: ${input.tagName}[contenteditable="${input.getAttribute("contenteditable")}"] class="${input.className.slice(0,80)}"`);
+
+    // Focus + small pause so Z2U's UI is ready
     input.focus();
+    input.click();
+    await sleep(150);
+
     if (input.getAttribute("contenteditable") === "true") {
+      // Clear and insert via execCommand (browser fires native events React understands)
       input.textContent = "";
       document.execCommand("insertText", false, text);
       input.dispatchEvent(new Event("input", { bubbles: true }));
+      // Also try React fiber handler as belt-and-suspenders
+      fireReactChange(input, text);
     } else {
+      // <textarea> or <input>
       const proto = input.tagName === "TEXTAREA"
         ? window.HTMLTextAreaElement.prototype
         : window.HTMLInputElement.prototype;
@@ -249,19 +322,41 @@
       else input.value = text;
       input.dispatchEvent(new Event("input",  { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
+      // Drive React's internal state
+      if (!fireReactChange(input, text)) {
+        // Last resort: simulate keyboard events character by character is too slow;
+        // re-dispatch native input event with the value already set (covers most cases)
+        input.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+      }
     }
 
-    await sleep(300);
+    await sleep(400);
 
-    const sendBtn = Array.from(document.querySelectorAll("button, [role='button']"))
-      .find(b => /send|submit/i.test(b.className + " " + (b.getAttribute("aria-label") || "")));
-    if (sendBtn) sendBtn.click();
-    else {
-      input.dispatchEvent(new KeyboardEvent("keydown",  { key: "Enter", keyCode: 13, bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", keyCode: 13, bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent("keyup",    { key: "Enter", keyCode: 13, bubbles: true }));
+    // Find the send button — must be visible and in the chat area (not sidebar)
+    const sendBtn = Array.from(document.querySelectorAll(
+      "button, [role='button'], [class*='send'], [class*='Send'], [class*='submit']"
+    )).find(b => {
+      if (!b.offsetParent) return false; // invisible
+      if (b.closest('[class*="sideBar"], [class*="sidebar"], [class*="chatList"], aside, nav')) return false;
+      const txt  = (b.textContent || "").trim().toLowerCase();
+      const cls  = (b.className || "").toLowerCase();
+      const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+      return /send|submit|发送/.test(txt + " " + cls + " " + aria);
+    });
+
+    if (sendBtn) {
+      sendBtn.click();
+      LOG(`✅ Clicked send button for "${username}"`);
+    } else {
+      // Fall back to Enter key (most chat apps accept Enter to send)
+      const evtOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+      input.dispatchEvent(new KeyboardEvent("keydown",  evtOpts));
+      input.dispatchEvent(new KeyboardEvent("keypress", evtOpts));
+      input.dispatchEvent(new KeyboardEvent("keyup",    evtOpts));
+      LOG(`✅ Sent Enter key for "${username}"`);
     }
-    LOG(`✅ Sent reply to "${username}": "${text.slice(0, 60)}"`);
+
+    LOG(`✅ Reply dispatched to "${username}": "${text.slice(0, 60)}"`);
   }
 
   // ── Main monitor loop ───────────────────────────────────────────────────────
