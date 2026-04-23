@@ -301,6 +301,23 @@
     }
   }
 
+  // ── Debug helpers (call from DevTools on z2u.com/Chat) ─────────────────────
+  window._z2uChatDebug = {
+    // Force-send a fake message to Telegram to verify the pipeline
+    test: () => forwardToTelegram("DebugUser", "Test message from z2u chat content script"),
+    // Dump the current conversation list to console
+    dump: () => {
+      const items = getConvItems();
+      LOG(`getConvItems() → ${items.length} items`);
+      items.forEach((item, i) => {
+        const info = extractConvInfo(item);
+        LOG(`  [${i}] username="${info.username}" preview="${info.preview}" hasUnread=${info.hasUnread}`);
+      });
+    },
+    // Show persisted forwarded map
+    forwarded: () => LOG("chatForwarded:", JSON.stringify(chatForwarded)),
+  };
+
   // ── Startup ─────────────────────────────────────────────────────────────────
   await sleep(2000); // Wait for page to fully render
   await loadChatForwarded();

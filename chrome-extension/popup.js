@@ -126,6 +126,47 @@ document.getElementById("tgSaveBtn").addEventListener("click", async () => {
   await verifyTgBot(token, chatId);
 });
 
+document.getElementById("tgTestBtn").addEventListener("click", async () => {
+  const testEl = document.getElementById("tgTestMsg");
+  const token  = document.getElementById("tgToken").value.trim();
+  const chatId = document.getElementById("tgChatId").value.trim();
+  if (!token || !chatId) {
+    testEl.textContent = "Save Bot Token + Chat ID first.";
+    testEl.style.color = "#fca5a5";
+    return;
+  }
+  testEl.textContent = "Sending…";
+  testEl.style.color = "#c4b5fd";
+  try {
+    const text =
+      `💬 <b>Z2U Chat</b>\n` +
+      `👤 <b>TestUser</b>:\n` +
+      `This is a test message from your extension.\n\n` +
+      `<i>↩ Reply to this message to test the reply pipeline</i>`;
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      // Store the mapping so the reply pipeline can be tested too
+      const stored = await chrome.storage.local.get(["tgMsgMap"]);
+      const map = stored.tgMsgMap || {};
+      map[String(d.result.message_id)] = "TestUser";
+      await chrome.storage.local.set({ tgMsgMap: map });
+      testEl.textContent = `✅ Sent! (msg_id=${d.result.message_id}) — reply to it in Telegram to test replies.`;
+      testEl.style.color = "#6ee7b7";
+    } else {
+      testEl.textContent = `❌ ${d.description}`;
+      testEl.style.color = "#fca5a5";
+    }
+  } catch (e) {
+    testEl.textContent = `❌ ${e.message}`;
+    testEl.style.color = "#fca5a5";
+  }
+});
+
 async function verifyTgBot(token, chatId) {
   const statusEl = document.getElementById("tgStatus");
   statusEl.textContent = "Verifying bot…";
