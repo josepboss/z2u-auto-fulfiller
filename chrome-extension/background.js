@@ -309,15 +309,39 @@ function scheduleNextRefresh() {
   console.log(`[Z2U] Next refresh in ${seconds}s`);
 }
 
+function scheduleNextChatRefresh() {
+  const seconds = randomBetween(120, 300); // 2–5 minutes
+  chrome.alarms.create("refresh_chat", { delayInMinutes: seconds / 60 });
+  console.log(`[Z2U] Next Chat refresh in ${seconds}s`);
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[Z2U] Extension installed. Scheduling first refresh.");
   scheduleNextRefresh();
+  scheduleNextChatRefresh();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   // Keep-alive ping — just waking the service worker is enough
   if (alarm.name === "capture_keepalive") {
     console.log("[Z2U-debugger] Keep-alive ping — SW still active, captureActive=", captureActive);
+    return;
+  }
+
+  if (alarm.name === "refresh_chat") {
+    chrome.tabs.query({}, (allTabs) => {
+      const chatTab = allTabs.find(
+        (t) => t.url && /z2u\.com\/Chat/i.test(t.url)
+      );
+      if (chatTab) {
+        chrome.tabs.reload(chatTab.id, () => {
+          console.log(`[Z2U] Refreshed Chat tab ${chatTab.id}: ${chatTab.url}`);
+        });
+      } else {
+        console.log("[Z2U] No Z2U Chat tab found. Skipping Chat refresh.");
+      }
+      scheduleNextChatRefresh();
+    });
     return;
   }
 

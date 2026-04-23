@@ -335,15 +335,5 @@
     pollTelegram();
   }, 5000);
 
-  // Auto-refresh between 2–5 min
-  const MIN_MS = 2 * 60 * 1000;
-  const MAX_MS = 5 * 60 * 1000;
-  const refreshDelay = Math.floor(Math.random() * (MAX_MS - MIN_MS + 1)) + MIN_MS;
-  LOG(`Auto-refresh scheduled in ${Math.round(refreshDelay / 1000)} s`);
-  handles.refresh = setTimeout(() => {
-    LOG("Auto-refreshing page…");
-    window.location.reload();
-  }, refreshDelay);
-
   LOG("Chat monitor started on", window.location.href);
 })().catch(e => console.warn("[Z2U-CHAT] Fatal error:", e.message));
