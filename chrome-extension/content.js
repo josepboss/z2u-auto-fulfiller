@@ -832,15 +832,16 @@
       if (prepBtn) {
         log("DETAIL", `[PREPARE-ONLY] Clicking "Preparing" button…`);
         prepBtn.click();
-        await sleep(2000);
-        log("DETAIL", `[PREPARE-ONLY] ✅ Clicked. Marking done and returning to list.`);
+        log("DETAIL", `[PREPARE-ONLY] ✅ Clicked.`);
       } else {
-        warn("DETAIL", `[PREPARE-ONLY] "Preparing" button not found — order may already be past NEW ORDER stage.`);
+        warn("DETAIL", `[PREPARE-ONLY] "Preparing" button not found — may already be past NEW ORDER.`);
         dumpButtons("PREPARE-ONLY-STUCK");
       }
 
-      // Mark processed so we don't re-visit this order
-      await bgMarkProcessed(orderId);
+      // Fire-and-forget — do NOT await, SW may be sleeping and would block indefinitely
+      chrome.runtime.sendMessage({ type: "MARK_PROCESSED", orderId }).catch(() => {});
+
+      // Navigate back immediately — don't wait for anything
       log("DETAIL", `[PREPARE-ONLY] Navigating back to order list.`);
       window.location.href = "https://www.z2u.com/sellOrder/index";
       return;
