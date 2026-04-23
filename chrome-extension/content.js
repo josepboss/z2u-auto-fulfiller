@@ -1123,6 +1123,18 @@
       log("DETAIL", `[6] Page state → hasTemplateLink:${hasTemplateLink} | hasStartTrading:${hasStartTrading} | hasPrepBtn:${hasPrepBtn}`);
       dumpButtons("DETAIL-STATE-CHECK");
 
+      // ── WAIT FOR CONFIRMED guard ───────────────────────────────────────────
+      // When the order is already at "Waiting for Confirmation" the progress bar
+      // still contains the word "DELIVERING" (as a completed step label), which
+      // would otherwise trick the state machine into re-downloading + re-uploading
+      // the template.  Detect this state early and jump straight to confirm.
+      const hasWaitForConfirm = pageText.includes("WAIT FOR CONFIRM") ||
+                                pageText.includes("WAITING FOR CONFIRM");
+      if (hasWaitForConfirm) {
+        log("DETAIL", `[6] 🟡 Status is WAIT FOR CONFIRMED — file already uploaded. Skipping upload, going straight to confirm delivery.`);
+        return await confirmDeliveredFlow(quantity);
+      }
+
       if (!hasTemplateLink) {
         // Need to advance through PREPARING and/or START TRADING first
 
