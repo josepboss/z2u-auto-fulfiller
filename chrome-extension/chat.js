@@ -133,66 +133,80 @@
   }
 
   // ── Z2U chat DOM helpers ────────────────────────────────────────────────────
-  function getConvItems() {
-    const candidates = [
-      '[class*="chatListItem"]',
-      '[class*="chat-list-item"]',
-      '[class*="chatItem"]',
-      '[class*="contactItem"]',
-      '[class*="conversationItem"]',
-      '[class*="userListItem"]',
-    ];
-    for (const sel of candidates) {
-      const items = Array.from(document.querySelectorAll(sel));
-      if (items.length > 0) return items;
-    }
-    return Array.from(document.querySelectorAll(
-      '.chatList li, [class*="chatList"] li, [class*="sideBar"] li, aside li'
-    ));
+
+  // Returns true if a leaf element looks like a badge (1-2 digit positive number,
+  // NOT a pure time string like "22:39" and NOT part of a long sentence).
+  function looksLikeBadge(el) {
+    if (el.childElementCount > 0) return false;
+    const t = el.textContent?.trim() || "";
+    return /^[1-9]\d?$/.test(t); // 1-99 only, no colons/letters
   }
 
-  // Returns true if the item contains a visible unread-count badge (a small positive integer).
-  // Uses class selectors first, then falls back to scanning all leaf elements for 1-3 digit numbers.
-  function itemHasUnread(item) {
-    // Class-based selectors
-    const badge = item.querySelector(
-      '[class*="unread" i], [class*="badge" i], [class*="msgCount" i], ' +
-      '[class*="unreadCount" i], [class*="count" i], [class*="num" i], [class*="dot" i]'
-    );
-    if (badge) {
-      const t = badge.textContent?.trim();
-      if (t && t !== "0" && /^[1-9]\d{0,2}$/.test(t)) return true;
+  // Find all conversation list items using a 4-strategy cascade.
+  function getConvItems() {
+    // ── Strategy 1: common class-name patterns ────────────────────────────────
+    const classPatterns = [
+      '[class*="chatListItem"]', '[class*="chat-list-item"]',
+      '[class*="chatItem"]',     '[class*="contactItem"]',
+      '[class*="conversationItem"]', '[class*="userListItem"]',
+      '[class*="chat-user"]',    '[class*="msg-item"]',
+      '[class*="imItem"]',       '[class*="im-item"]',
+      '[class*="userItem"]',     '[class*="friendItem"]',
+    ];
+    for (const sel of classPatterns) {
+      const items = Array.from(document.querySelectorAll(sel));
+      if (items.length >= 2) return items;
     }
 
-    // Fallback: any leaf element whose entire text is a 1-3 digit positive number
-    // (badges like "2" will be their own element; timestamps like "22:39" have a colon)
-    const leaves = Array.from(item.querySelectorAll("span, div, em, i, b, strong"))
-      .filter(el => el.childElementCount === 0);
-    return leaves.some(el => /^[1-9]\d{0,2}$/.test(el.textContent?.trim() || ""));
+    // ── Strategy 2: li elements that contain an avatar <img> ─────────────────
+    const lisWithImg = Array.from(document.querySelectorAll("li"))
+      .filter(li => li.querySelector("img"));
+    if (lisWithImg.length >= 2) return lisWithImg;
+
+    // ── Strategy 3: badge-first — find a number badge, walk up to its list-item
+    //    container, then return all siblings of that container ─────────────────
+    const allEls = Array.from(document.querySelectorAll("*"));
+    for (const el of allEls) {
+      if (!looksLikeBadge(el)) continue;
+      // Walk up until we find a sibling-rich parent (the list container)
+      let node = el.parentElement;
+      for (let i = 0; i < 8; i++) {
+        if (!node || node === document.body) break;
+        const parent = node.parentElement;
+        if (!parent) break;
+        const siblings = Array.from(parent.children);
+        // Each sibling should have at least 2 text-leaf children (name + message)
+        const convLike = siblings.filter(s => {
+          const texts = Array.from(s.querySelectorAll("*"))
+            .filter(c => c.childElementCount === 0 && (c.textContent?.trim().length || 0) > 1);
+          return texts.length >= 2;
+        });
+        if (convLike.length >= 3) return convLike; // Found the list!
+        node = parent;
+      }
+    }
+
+    // ── Strategy 4: structural — list-like containers in the left sidebar ─────
+    const leftItems = Array.from(document.querySelectorAll(
+      ".chatList li, [class*='chatList'] li, [class*='sideBar'] li, aside li, nav li"
+    ));
+    return leftItems;
+  }
+
+  // Returns true if the item contains a visible unread-count badge.
+  function itemHasUnread(item) {
+    return Array.from(item.querySelectorAll("*")).some(looksLikeBadge);
   }
 
   function extractConvInfo(item) {
-    // Try class-targeted selectors for username and preview
-    const nameEl = item.querySelector(
-      '[class*="name" i]:not([class*="last"]):not([class*="msg"]):not([class*="time"]),' +
-      '[class*="nick" i], [class*="title" i]'
-    );
-    const msgEl = item.querySelector(
-      '[class*="lastMsg" i], [class*="last-msg" i], [class*="preview" i], ' +
-      '[class*="content" i], [class*="desc" i], [class*="text" i]'
-    );
+    // Collect all leaf text nodes, filtering out pure numbers/timestamps/single chars
+    const leaves = Array.from(item.querySelectorAll("*"))
+      .filter(el => el.childElementCount === 0)
+      .map(el => el.textContent?.trim() || "")
+      .filter(t => t.length > 1 && !/^[\d:]+$/.test(t)); // skip badges & times
 
-    let username = nameEl?.textContent?.trim() || "";
-    let preview  = msgEl?.textContent?.trim() || "";
-
-    // Structural fallback: first two non-empty leaf texts
-    if (!username || !preview) {
-      const leaves = Array.from(item.querySelectorAll("*"))
-        .filter(el => el.childElementCount === 0 && el.textContent?.trim())
-        .map(el => el.textContent.trim());
-      if (!username) username = leaves[0] || "";
-      if (!preview)  preview  = leaves[1] || "";
-    }
+    const username = leaves[0] || "";
+    const preview  = leaves[1] || "";
 
     return { username, preview, hasUnread: itemHasUnread(item) };
   }
@@ -258,7 +272,11 @@
   async function scanChats() {
     if (!isContextValid()) { shutdown("context lost during scan"); return; }
     const items = getConvItems();
-    if (!items.length) return;
+    if (!items.length) {
+      if (!initialized) WARN("getConvItems() returned 0 — open DevTools and run: _z2uChatDebug.dump()");
+      return;
+    }
+    if (!initialized) LOG(`getConvItems() found ${items.length} items`);
 
     for (const item of items) {
       const { username, preview, hasUnread } = extractConvInfo(item);
