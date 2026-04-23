@@ -725,38 +725,50 @@
       return null;
     })();
 
-    if (submitBtn) {
-      submitBtn.click();
-      log("UPLOAD", `[C3] ✅ Clicked SUBMIT. Waiting for Z2U response…`);
-      await sleep(2500);
+    if (!submitBtn) {
+      err("UPLOAD", `[C3] SUBMIT button not found — aborting to avoid false confirmation.`);
+      return false;
+    }
 
-      // Check for any error/warning toast Z2U shows after a failed upload.
-      // Ant Design toasts appear as .ant-message-notice divs — grab their text.
+    submitBtn.click();
+    log("UPLOAD", `[C3] ✅ Clicked SUBMIT. Waiting for modal to close (= upload accepted)…`);
+
+    // ── Wait for modal to CLOSE as the authoritative success signal ───────────
+    // If the upload is rejected (no file / wrong field), Z2U keeps the modal
+    // open and shows a toast inside it.  If accepted, the modal closes.
+    // We must NOT proceed to Confirm Delivered until the modal is gone.
+    const waitForClose = Date.now() + 12000;
+    let uploadAccepted = false;
+    while (Date.now() < waitForClose) {
+      // Check for error toasts first (fast-fail path)
       const toastEls = Array.from(document.querySelectorAll(
         ".ant-message-notice, .ant-message-error, .ant-message-warning, " +
         ".el-message, [class*='toast'], [class*='notify']"
       ));
       for (const t of toastEls) {
         const txt = t.textContent?.trim() || "";
-        if (txt) {
-          log("UPLOAD", `[C3] Z2U toast: "${txt.slice(0, 200)}"`);
-          // "Please input note" = Z2U requires a note textarea to be filled (Step C2.5 handles it).
-          // "Please select file" / similar = file injection failed. Any toast = upload NOT accepted.
-          if (/input|note|select|file|upload|error|fail|invalid/i.test(txt)) {
-            err("UPLOAD", `[C3] Upload rejected by Z2U: "${txt.slice(0, 200)}" — aborting to avoid false confirmation.`);
-            return false;
-          }
+        if (txt && /input|note|select|file|upload|error|fail|invalid/i.test(txt)) {
+          err("UPLOAD", `[C3] Upload rejected: "${txt.slice(0, 200)}" — aborting.`);
+          return false;
         }
       }
-    } else {
-      warn("UPLOAD", `[C3] SUBMIT button not found.`);
+      // Modal gone = upload was accepted by Z2U
+      if (!modalEl()) {
+        uploadAccepted = true;
+        break;
+      }
+      await sleep(400);
     }
 
+    if (!uploadAccepted) {
+      err("UPLOAD", `[C3] Modal still open after 12 s — upload failed (no file in React state). Aborting.`);
+      return false;
+    }
+
+    log("UPLOAD", `[C3] ✅ Modal closed — upload accepted by Z2U.`);
+    await sleep(500);
+
     // ── C4 / D / E: Shared confirm-delivered flow ────────────────────────────
-    // The UI-modal path also uses the same logic as the direct-API path.
-    // After SUBMIT, the "Please input note" error will still cause this to run,
-    // but confirmDeliveredFlow will fail to see "View Delivery Account Information"
-    // and return false — no false confirmations.
     return await confirmDeliveredFlow(quantity);
   }
 
