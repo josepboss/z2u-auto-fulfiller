@@ -741,12 +741,37 @@
         continue;
       }
 
+      // ── Unmapped NEW ORDER: click Prepare and return ─────────────────────
       if (!mappings[title]) {
-        warn("LIST", `No mapping for title: "${title}"`);
-        log("LIST", `Available mappings: ${JSON.stringify(mappingKeys)}`);
-        continue;
+        // Only act on NEW ORDER status for unmapped offers (PREPARING/DELIVERING leave them alone)
+        if (!statusText.includes("NEW ORDER")) {
+          log("LIST", `Unmapped order ${orderId} in state "${statusText}" — ignoring.`);
+          continue;
+        }
+
+        if (sessionDone.has(orderId)) {
+          log("LIST", `Unmapped order ${orderId} already prepared this session.`);
+          continue;
+        }
+        const alreadyDone = await bgIsProcessed(orderId);
+        if (alreadyDone) {
+          log("LIST", `Unmapped order ${orderId} already processed.`);
+          continue;
+        }
+
+        if (!detailHref) {
+          warn("LIST", `No detail link for unmapped order ${orderId}.`);
+          continue;
+        }
+
+        log("LIST", `⚡ Unmapped NEW ORDER "${title}" (${orderId}) → navigating to click Prepare only`);
+        sessionDone.add(orderId);
+        await chrome.storage.local.set({ prepareOnly: true, pendingOrderId: orderId });
+        window.location.href = detailHref;
+        return;
       }
 
+      // ── Mapped order: full fulfillment flow ───────────────────────────────
       if (sessionDone.has(orderId)) {
         log("LIST", `Order ${orderId} already in progress this session.`);
         continue;
@@ -789,6 +814,37 @@
     // Give page time to fully render
     log("DETAIL", "Waiting 1s for page to fully render…");
     await sleep(1000);
+
+    // ── Prepare-only mode (unmapped orders) ──────────────────────────────────
+    // Set by the list page when an unmapped NEW ORDER is detected.
+    // We just click "Preparing" and go back — no upload, no confirm.
+    const { prepareOnly, pendingOrderId: prepareOrderId } = await new Promise((r) =>
+      chrome.storage.local.get(["prepareOnly", "pendingOrderId"], r)
+    );
+
+    if (prepareOnly && prepareOrderId === orderId) {
+      log("DETAIL", `[PREPARE-ONLY] Unmapped order ${orderId} — clicking Prepare then returning to list.`);
+      await chrome.storage.local.remove(["prepareOnly", "pendingOrderId"]);
+
+      const allBtns = Array.from(document.querySelectorAll("button, a"));
+      const prepBtn = allBtns.find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
+
+      if (prepBtn) {
+        log("DETAIL", `[PREPARE-ONLY] Clicking "Preparing" button…`);
+        prepBtn.click();
+        await sleep(2000);
+        log("DETAIL", `[PREPARE-ONLY] ✅ Clicked. Marking done and returning to list.`);
+      } else {
+        warn("DETAIL", `[PREPARE-ONLY] "Preparing" button not found — order may already be past NEW ORDER stage.`);
+        dumpButtons("PREPARE-ONLY-STUCK");
+      }
+
+      // Mark processed so we don't re-visit this order
+      await bgMarkProcessed(orderId);
+      log("DETAIL", `[PREPARE-ONLY] Navigating back to order list.`);
+      window.location.href = "https://www.z2u.com/sellOrder/index";
+      return;
+    }
 
     // ── [1] Status check ────────────────────────────────────────────────────
     // Z2U order flow: NEW ORDER → PREPARING → Delivering → Waiting for confirmation → Completed
