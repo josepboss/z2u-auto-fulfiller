@@ -404,14 +404,20 @@
     return !text.toLowerCase().includes("<html") && !text.toLowerCase().includes("error");
   }
 
-  // Known Z2U upload endpoints to probe when stored/manual endpoint fails.
-  // These were captured via CDP from real Z2U upload sessions.
+  // Known Z2U XLSX delivery upload endpoints.
+  // IMPORTANT: uploadOrderImg.html is intentionally excluded — it accepts any
+  // file and returns success, but it is for trade evidence screenshots, NOT for
+  // the bulk delivery XLSX template.  Including it causes false-positive
+  // "upload succeeded" results which skip the real upload and confirm delivery empty.
   const Z2U_KNOWN_ENDPOINTS = [
-    { url: "https://www.z2u.com/sellOrder/uploadSellForm",    method: "POST" },
-    { url: "https://www.z2u.com/SellOrder/uploadSellForm",    method: "POST" },
-    { url: "https://www.z2u.com/sellOrder/uploadOrderImg.html", method: "POST" },
-    { url: "https://www.z2u.com/SellOrder/uploadOrderImg.html", method: "POST" },
+    { url: "https://www.z2u.com/sellOrder/uploadSellForm", method: "POST" },
+    { url: "https://www.z2u.com/SellOrder/uploadSellForm", method: "POST" },
   ];
+
+  // Returns true if a URL is the image-evidence endpoint (wrong for XLSX delivery)
+  function isImageEndpoint(url) {
+    return /uploadOrderImg|uploadImg|uploadImage|orderImg/i.test(url || "");
+  }
 
   async function tryEndpoint(epUrl, epMethod, extraFields, file, orderId, label) {
     for (const fieldName of Z2U_FILE_FIELDS) {
@@ -434,8 +440,11 @@
       chrome.storage.local.get(["z2uUploadEndpoint"], (d) => r(d.z2uUploadEndpoint))
     );
 
-    // ── Try stored endpoint first ─────────────────────────────────────────────
-    if (stored?.url) {
+    // ── Try stored endpoint first (skip if it's the image-evidence endpoint) ──
+    if (stored?.url && isImageEndpoint(stored.url)) {
+      warn("UPLOAD-API", `Stored endpoint "${stored.url}" is an image/screenshot endpoint — skipping to avoid false-positive. Use Reset Endpoint + Capture Mode to get the real XLSX endpoint.`);
+    }
+    if (stored?.url && !isImageEndpoint(stored.url)) {
       log("UPLOAD-API", `Stored endpoint: ${stored.method || "POST"} ${stored.url}`);
 
       // Case 1: CDP decoded the multipart body — we know the exact field name
