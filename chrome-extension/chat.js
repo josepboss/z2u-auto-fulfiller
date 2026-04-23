@@ -5,16 +5,47 @@
   const WARN = (...a) => console.warn("[Z2U-CHAT]", ...a);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+  // Active timer/interval handles so we can stop them on context loss
+  const handles = { poll: null, refresh: null, observer: null };
+
+  // ── Extension context guard ─────────────────────────────────────────────────
+  // When the extension is reloaded while this tab is open, chrome.* calls throw
+  // "Extension context invalidated". We detect this and stop all activity.
+
+  function isContextValid() {
+    try { return !!chrome.runtime?.id; } catch { return false; }
+  }
+
+  function shutdown(reason) {
+    WARN("Shutting down chat monitor:", reason);
+    if (handles.poll)     { clearInterval(handles.poll);   handles.poll = null; }
+    if (handles.refresh)  { clearTimeout(handles.refresh); handles.refresh = null; }
+    if (handles.observer) { handles.observer.disconnect(); handles.observer = null; }
+  }
+
+  // Wrap any chrome.storage.local.get call so it never throws unhandled
+  async function getTgConfig() {
+    if (!isContextValid()) return {};
+    return new Promise(r => {
+      try {
+        chrome.storage.local.get(["tgToken", "tgChatId", "tgOffset", "tgMsgMap"], r);
+      } catch (e) {
+        shutdown(e.message);
+        r({});
+      }
+    });
+  }
+
+  async function setStorage(obj) {
+    if (!isContextValid()) return;
+    try { await chrome.storage.local.set(obj); }
+    catch (e) { shutdown(e.message); }
+  }
+
   // ── Telegram helpers ────────────────────────────────────────────────────────
 
   function escHtml(s) {
     return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-
-  async function getTgConfig() {
-    return new Promise(r =>
-      chrome.storage.local.get(["tgToken", "tgChatId", "tgOffset", "tgMsgMap"], r)
-    );
   }
 
   // Send a message to Telegram; returns the sent message_id or null on error
@@ -37,8 +68,8 @@
   }
 
   // Forward a new Z2U chat message to Telegram.
-  // Stores the returned message_id → username mapping so replies can be routed back.
   async function forwardToTelegram(username, message) {
+    if (!isContextValid()) return;
     const cfg = await getTgConfig();
     if (!cfg.tgToken || !cfg.tgChatId) {
       WARN("Telegram not configured — open the extension popup to set Bot Token + Chat ID");
@@ -48,18 +79,14 @@
       `💬 <b>Z2U Chat</b>\n` +
       `👤 <b>${escHtml(username)}</b>:\n` +
       `${escHtml(message)}\n\n` +
-      `<i>↩ Reply to this message to send a response via Z2U chat</i>`;
+      `<i>↩ Reply to this message to respond via Z2U chat</i>`;
     const msgId = await tgSend(cfg.tgToken, cfg.tgChatId, text);
     if (msgId) {
       const map = cfg.tgMsgMap || {};
       map[String(msgId)] = username;
-      // Keep map bounded to last 500 entries
       const keys = Object.keys(map);
-      if (keys.length > 500) {
-        const oldest = keys.slice(0, keys.length - 500);
-        oldest.forEach(k => delete map[k]);
-      }
-      await chrome.storage.local.set({ tgMsgMap: map });
+      if (keys.length > 500) keys.slice(0, keys.length - 500).forEach(k => delete map[k]);
+      await setStorage({ tgMsgMap: map });
       LOG(`→ Telegram (id=${msgId}) | ${username}: ${message.slice(0, 60)}`);
     }
   }
@@ -67,6 +94,7 @@
   // ── Telegram polling (check for replies every 5 s) ──────────────────────────
 
   async function pollTelegram() {
+    if (!isContextValid()) { shutdown("context lost during poll"); return; }
     const cfg = await getTgConfig();
     if (!cfg.tgToken || !cfg.tgChatId) return;
     const offset = cfg.tgOffset || 0;
@@ -96,7 +124,7 @@
         await sendReplyToUser(username, msg.text);
       }
 
-      await chrome.storage.local.set({ tgOffset: lastOffset });
+      await setStorage({ tgOffset: lastOffset });
     } catch (e) {
       WARN("pollTelegram error:", e.message);
     }
@@ -104,9 +132,7 @@
 
   // ── Z2U chat DOM helpers ────────────────────────────────────────────────────
 
-  // Find all conversation list items in the left sidebar
   function getConvItems() {
-    // Try progressively broader selectors until we find items
     const candidates = [
       '[class*="chatListItem"]',
       '[class*="chat-list-item"]',
@@ -119,22 +145,18 @@
       const items = Array.from(document.querySelectorAll(sel));
       if (items.length > 0) return items;
     }
-    // Structural fallback: left-panel list items that contain an avatar + name
     return Array.from(document.querySelectorAll(
       '.chatList li, [class*="chatList"] li, [class*="sideBar"] li, aside li'
     ));
   }
 
-  // Extract username, last-message preview, and unread state from a sidebar item
   function extractConvInfo(item) {
-    // Walk leaf text nodes to find username (first bold/heading child) and preview
     const leaves = Array.from(item.querySelectorAll("*"))
-      .filter(el => el.childElementCount === 0 && (el.textContent?.trim()));
+      .filter(el => el.childElementCount === 0 && el.textContent?.trim());
 
     const username = leaves[0]?.textContent?.trim() || "";
     const preview  = leaves[1]?.textContent?.trim() || "";
 
-    // Unread badge: red circle with a number > 0
     const badge = item.querySelector(
       '[class*="unread"], [class*="badge"], [class*="unreadCount"], [class*="msgCount"], [class*="dot"]'
     );
@@ -144,7 +166,6 @@
     return { username, preview, hasUnread };
   }
 
-  // Find a sidebar item whose text contains the given username
   function findConvByUsername(username) {
     return getConvItems().find(item =>
       (item.textContent || "").includes(username)
@@ -160,11 +181,9 @@
       return;
     }
 
-    // Open that conversation
     item.click();
     await sleep(800);
 
-    // Find the message input (textarea, contenteditable div, or plain input)
     const input = document.querySelector(
       '[class*="messageInput"] textarea, ' +
       '[class*="chatInput"] textarea, ' +
@@ -183,12 +202,10 @@
     input.focus();
 
     if (input.getAttribute("contenteditable") === "true") {
-      // ContentEditable div (React Draft / Slate / Lexical editors)
       input.textContent = "";
       document.execCommand("insertText", false, text);
       input.dispatchEvent(new Event("input", { bubbles: true }));
     } else {
-      // Standard textarea / input
       const proto = input.tagName === "TEXTAREA"
         ? window.HTMLTextAreaElement.prototype
         : window.HTMLInputElement.prototype;
@@ -201,7 +218,6 @@
 
     await sleep(300);
 
-    // Click the Send button, or press Enter if no button found
     const sendBtn = Array.from(document.querySelectorAll("button, [role='button']"))
       .find(b => /send|submit/i.test(b.className + " " + (b.getAttribute("aria-label") || "")));
     if (sendBtn) {
@@ -217,28 +233,26 @@
 
   // ── Main monitor loop ───────────────────────────────────────────────────────
 
-  const seenMessages = new Map(); // username → last preview we forwarded (or recorded on init)
+  const seenMessages = new Map();
   let initialized   = false;
 
   function scanChats() {
+    if (!isContextValid()) { shutdown("context lost during scan"); return; }
     const items = getConvItems();
-    if (!items.length) return; // Page not rendered yet
+    if (!items.length) return;
 
     for (const item of items) {
       const { username, preview, hasUnread } = extractConvInfo(item);
       if (!username || !preview) continue;
 
       if (!initialized) {
-        // First scan: snapshot current state without forwarding anything
         seenMessages.set(username, preview);
         continue;
       }
 
-      // After init: only forward conversations with a visible unread indicator
-      // whose preview text changed since last check
       if (!hasUnread) continue;
       const lastSeen = seenMessages.get(username);
-      if (lastSeen === preview) continue; // Already forwarded this exact message
+      if (lastSeen === preview) continue;
 
       seenMessages.set(username, preview);
       forwardToTelegram(username, preview);
@@ -246,33 +260,36 @@
 
     if (!initialized) {
       initialized = true;
-      LOG(`Initialized — ${seenMessages.size} existing conversations snapshotted (not forwarded)`);
+      LOG(`Initialized — ${seenMessages.size} existing conversations snapshotted`);
     }
   }
 
-  // Wait for initial page render
+  // ── Startup ─────────────────────────────────────────────────────────────────
+
   await sleep(2000);
   scanChats();
 
-  // Watch for DOM changes (unread badges appearing, new conversations)
-  new MutationObserver(() => scanChats()).observe(document.body, {
-    childList: true,
-    subtree:   true,
+  const obs = new MutationObserver(() => {
+    if (!isContextValid()) { shutdown("context lost in MutationObserver"); return; }
+    scanChats();
   });
+  obs.observe(document.body, { childList: true, subtree: true });
+  handles.observer = obs;
 
-  // Poll Telegram every 5 s for replies
-  setInterval(pollTelegram, 5000);
+  handles.poll = setInterval(() => {
+    if (!isContextValid()) { shutdown("context lost in poll interval"); return; }
+    pollTelegram();
+  }, 5000);
 
-  // Auto-refresh the page at a random interval between 2 and 5 minutes
-  // so Z2U's chat list stays current even if the site doesn't push updates
+  // Auto-refresh between 2–5 min
   const MIN_MS = 2 * 60 * 1000;
   const MAX_MS = 5 * 60 * 1000;
   const refreshDelay = Math.floor(Math.random() * (MAX_MS - MIN_MS + 1)) + MIN_MS;
   LOG(`Auto-refresh scheduled in ${Math.round(refreshDelay / 1000)} s`);
-  setTimeout(() => {
+  handles.refresh = setTimeout(() => {
     LOG("Auto-refreshing page…");
     window.location.reload();
   }, refreshDelay);
 
   LOG("Chat monitor started on", window.location.href);
-})();
+})().catch(e => console.warn("[Z2U-CHAT] Fatal error:", e.message));
