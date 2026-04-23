@@ -263,5 +263,16 @@
   // Poll Telegram every 5 s for replies
   setInterval(pollTelegram, 5000);
 
+  // Auto-refresh the page at a random interval between 2 and 5 minutes
+  // so Z2U's chat list stays current even if the site doesn't push updates
+  const MIN_MS = 2 * 60 * 1000;
+  const MAX_MS = 5 * 60 * 1000;
+  const refreshDelay = Math.floor(Math.random() * (MAX_MS - MIN_MS + 1)) + MIN_MS;
+  LOG(`Auto-refresh scheduled in ${Math.round(refreshDelay / 1000)} s`);
+  setTimeout(() => {
+    LOG("Auto-refreshing page…");
+    window.location.reload();
+  }, refreshDelay);
+
   LOG("Chat monitor started on", window.location.href);
 })();
