@@ -731,16 +731,18 @@
     }
 
     submitBtn.click();
-    log("UPLOAD", `[C3] ✅ Clicked SUBMIT. Waiting for modal to close (= upload accepted)…`);
+    log("UPLOAD", `[C3] ✅ Clicked SUBMIT. Tracking Submit button removal (= modal close = upload accepted)…`);
+    await sleep(300); // brief pause so Z2U can process the click
 
-    // ── Wait for modal to CLOSE as the authoritative success signal ───────────
-    // If the upload is rejected (no file / wrong field), Z2U keeps the modal
-    // open and shows a toast inside it.  If accepted, the modal closes.
-    // We must NOT proceed to Confirm Delivered until the modal is gone.
+    // ── Wait for the Submit button to leave the DOM ───────────────────────────
+    // Checking document.contains(submitBtn) is selector-independent: when the
+    // upload modal closes (success), Z2U removes that button from the DOM.
+    // When the upload is rejected the modal stays open and the button stays in DOM.
+    // We do NOT use modalEl() because Z2U's modal may use custom CSS classes.
     const waitForClose = Date.now() + 12000;
     let uploadAccepted = false;
     while (Date.now() < waitForClose) {
-      // Check for error toasts first (fast-fail path)
+      // Fast-fail: catch visible error toasts
       const toastEls = Array.from(document.querySelectorAll(
         ".ant-message-notice, .ant-message-error, .ant-message-warning, " +
         ".el-message, [class*='toast'], [class*='notify']"
@@ -752,8 +754,8 @@
           return false;
         }
       }
-      // Modal gone = upload was accepted by Z2U
-      if (!modalEl()) {
+      // Submit button removed from DOM = modal closed = upload accepted
+      if (!document.contains(submitBtn)) {
         uploadAccepted = true;
         break;
       }
@@ -761,11 +763,11 @@
     }
 
     if (!uploadAccepted) {
-      err("UPLOAD", `[C3] Modal still open after 12 s — upload failed (no file in React state). Aborting.`);
+      err("UPLOAD", `[C3] Submit button still in DOM after 12 s — upload failed. Aborting.`);
       return false;
     }
 
-    log("UPLOAD", `[C3] ✅ Modal closed — upload accepted by Z2U.`);
+    log("UPLOAD", `[C3] ✅ Submit button gone — modal closed, upload accepted by Z2U.`);
     await sleep(500);
 
     // ── C4 / D / E: Shared confirm-delivered flow ────────────────────────────
