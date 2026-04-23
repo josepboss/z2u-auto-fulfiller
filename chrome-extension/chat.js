@@ -5,13 +5,9 @@
   const WARN = (...a) => console.warn("[Z2U-CHAT]", ...a);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  // Active timer/interval handles so we can stop them on context loss
   const handles = { poll: null, refresh: null, observer: null };
 
   // ── Extension context guard ─────────────────────────────────────────────────
-  // When the extension is reloaded while this tab is open, chrome.* calls throw
-  // "Extension context invalidated". We detect this and stop all activity.
-
   function isContextValid() {
     try { return !!chrome.runtime?.id; } catch { return false; }
   }
@@ -23,16 +19,14 @@
     if (handles.observer) { handles.observer.disconnect(); handles.observer = null; }
   }
 
-  // Wrap any chrome.storage.local.get call so it never throws unhandled
   async function getTgConfig() {
     if (!isContextValid()) return {};
     return new Promise(r => {
       try {
-        chrome.storage.local.get(["tgToken", "tgChatId", "tgOffset", "tgMsgMap"], r);
-      } catch (e) {
-        shutdown(e.message);
-        r({});
-      }
+        chrome.storage.local.get(
+          ["tgToken", "tgChatId", "tgOffset", "tgMsgMap", "chatForwarded"], r
+        );
+      } catch (e) { shutdown(e.message); r({}); }
     });
   }
 
@@ -42,13 +36,26 @@
     catch (e) { shutdown(e.message); }
   }
 
-  // ── Telegram helpers ────────────────────────────────────────────────────────
+  // ── Persisted "already forwarded" map (survives page refreshes) ─────────────
+  // chatForwarded: { [username]: lastPreviewTextWeForwarded }
+  let chatForwarded = {};
 
+  async function loadChatForwarded() {
+    const cfg = await getTgConfig();
+    chatForwarded = cfg.chatForwarded || {};
+    LOG(`Loaded forwarded history: ${Object.keys(chatForwarded).length} users`);
+  }
+
+  async function markForwarded(username, preview) {
+    chatForwarded[username] = preview;
+    await setStorage({ chatForwarded });
+  }
+
+  // ── Telegram helpers ────────────────────────────────────────────────────────
   function escHtml(s) {
     return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
-  // Send a message to Telegram; returns the sent message_id or null on error
   async function tgSend(token, chatId, html, replyToId = null) {
     const body = { chat_id: chatId, text: html, parse_mode: "HTML" };
     if (replyToId) body.reply_to_message_id = replyToId;
@@ -67,18 +74,17 @@
     }
   }
 
-  // Forward a new Z2U chat message to Telegram.
-  async function forwardToTelegram(username, message) {
+  async function forwardToTelegram(username, preview) {
     if (!isContextValid()) return;
     const cfg = await getTgConfig();
     if (!cfg.tgToken || !cfg.tgChatId) {
-      WARN("Telegram not configured — open the extension popup to set Bot Token + Chat ID");
+      WARN("Telegram not configured — open popup to set Bot Token + Chat ID");
       return;
     }
     const text =
       `💬 <b>Z2U Chat</b>\n` +
       `👤 <b>${escHtml(username)}</b>:\n` +
-      `${escHtml(message)}\n\n` +
+      `${escHtml(preview)}\n\n` +
       `<i>↩ Reply to this message to respond via Z2U chat</i>`;
     const msgId = await tgSend(cfg.tgToken, cfg.tgChatId, text);
     if (msgId) {
@@ -87,12 +93,12 @@
       const keys = Object.keys(map);
       if (keys.length > 500) keys.slice(0, keys.length - 500).forEach(k => delete map[k]);
       await setStorage({ tgMsgMap: map });
-      LOG(`→ Telegram (id=${msgId}) | ${username}: ${message.slice(0, 60)}`);
+      await markForwarded(username, preview);
+      LOG(`→ Telegram (id=${msgId}) | ${username}: "${preview.slice(0, 60)}"`);
     }
   }
 
-  // ── Telegram polling (check for replies every 5 s) ──────────────────────────
-
+  // ── Telegram polling ────────────────────────────────────────────────────────
   async function pollTelegram() {
     if (!isContextValid()) { shutdown("context lost during poll"); return; }
     const cfg = await getTgConfig();
@@ -112,14 +118,10 @@
         lastOffset = Math.max(lastOffset, update.update_id + 1);
         const msg = update.message;
         if (!msg?.text) continue;
-
-        // Only act on replies to our forwarded messages
         const replyToId = msg.reply_to_message?.message_id;
         if (!replyToId) continue;
-
         const username = map[String(replyToId)];
         if (!username) continue;
-
         LOG(`← Telegram reply for "${username}": "${msg.text}"`);
         await sendReplyToUser(username, msg.text);
       }
@@ -131,7 +133,6 @@
   }
 
   // ── Z2U chat DOM helpers ────────────────────────────────────────────────────
-
   function getConvItems() {
     const candidates = [
       '[class*="chatListItem"]',
@@ -150,20 +151,50 @@
     ));
   }
 
-  function extractConvInfo(item) {
-    const leaves = Array.from(item.querySelectorAll("*"))
-      .filter(el => el.childElementCount === 0 && el.textContent?.trim());
-
-    const username = leaves[0]?.textContent?.trim() || "";
-    const preview  = leaves[1]?.textContent?.trim() || "";
-
+  // Returns true if the item contains a visible unread-count badge (a small positive integer).
+  // Uses class selectors first, then falls back to scanning all leaf elements for 1-3 digit numbers.
+  function itemHasUnread(item) {
+    // Class-based selectors
     const badge = item.querySelector(
-      '[class*="unread"], [class*="badge"], [class*="unreadCount"], [class*="msgCount"], [class*="dot"]'
+      '[class*="unread" i], [class*="badge" i], [class*="msgCount" i], ' +
+      '[class*="unreadCount" i], [class*="count" i], [class*="num" i], [class*="dot" i]'
     );
-    const badgeText = badge?.textContent?.trim() || "0";
-    const hasUnread = !!badge && badgeText !== "" && badgeText !== "0";
+    if (badge) {
+      const t = badge.textContent?.trim();
+      if (t && t !== "0" && /^[1-9]\d{0,2}$/.test(t)) return true;
+    }
 
-    return { username, preview, hasUnread };
+    // Fallback: any leaf element whose entire text is a 1-3 digit positive number
+    // (badges like "2" will be their own element; timestamps like "22:39" have a colon)
+    const leaves = Array.from(item.querySelectorAll("span, div, em, i, b, strong"))
+      .filter(el => el.childElementCount === 0);
+    return leaves.some(el => /^[1-9]\d{0,2}$/.test(el.textContent?.trim() || ""));
+  }
+
+  function extractConvInfo(item) {
+    // Try class-targeted selectors for username and preview
+    const nameEl = item.querySelector(
+      '[class*="name" i]:not([class*="last"]):not([class*="msg"]):not([class*="time"]),' +
+      '[class*="nick" i], [class*="title" i]'
+    );
+    const msgEl = item.querySelector(
+      '[class*="lastMsg" i], [class*="last-msg" i], [class*="preview" i], ' +
+      '[class*="content" i], [class*="desc" i], [class*="text" i]'
+    );
+
+    let username = nameEl?.textContent?.trim() || "";
+    let preview  = msgEl?.textContent?.trim() || "";
+
+    // Structural fallback: first two non-empty leaf texts
+    if (!username || !preview) {
+      const leaves = Array.from(item.querySelectorAll("*"))
+        .filter(el => el.childElementCount === 0 && el.textContent?.trim())
+        .map(el => el.textContent.trim());
+      if (!username) username = leaves[0] || "";
+      if (!preview)  preview  = leaves[1] || "";
+    }
+
+    return { username, preview, hasUnread: itemHasUnread(item) };
   }
 
   function findConvByUsername(username) {
@@ -173,34 +204,23 @@
   }
 
   // ── Send reply via Z2U chat UI ──────────────────────────────────────────────
-
   async function sendReplyToUser(username, text) {
     const item = findConvByUsername(username);
-    if (!item) {
-      WARN(`Sidebar item for "${username}" not found — cannot send reply`);
-      return;
-    }
+    if (!item) { WARN(`Sidebar item for "${username}" not found`); return; }
 
     item.click();
     await sleep(800);
 
     const input = document.querySelector(
-      '[class*="messageInput"] textarea, ' +
-      '[class*="chatInput"] textarea, ' +
-      '[class*="inputBox"] textarea, ' +
-      'textarea[placeholder], ' +
+      '[class*="messageInput"] textarea, [class*="chatInput"] textarea, ' +
+      '[class*="inputBox"] textarea, textarea[placeholder], ' +
       'div[contenteditable="true"][class*="input"], ' +
       'div[contenteditable="true"][class*="msg"], ' +
       'div[contenteditable="true"][class*="chat"]'
     );
-
-    if (!input) {
-      WARN("Message input not found on chat page");
-      return;
-    }
+    if (!input) { WARN("Message input not found"); return; }
 
     input.focus();
-
     if (input.getAttribute("contenteditable") === "true") {
       input.textContent = "";
       document.execCommand("insertText", false, text);
@@ -220,23 +240,22 @@
 
     const sendBtn = Array.from(document.querySelectorAll("button, [role='button']"))
       .find(b => /send|submit/i.test(b.className + " " + (b.getAttribute("aria-label") || "")));
-    if (sendBtn) {
-      sendBtn.click();
-    } else {
+    if (sendBtn) sendBtn.click();
+    else {
       input.dispatchEvent(new KeyboardEvent("keydown",  { key: "Enter", keyCode: 13, bubbles: true }));
       input.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", keyCode: 13, bubbles: true }));
       input.dispatchEvent(new KeyboardEvent("keyup",    { key: "Enter", keyCode: 13, bubbles: true }));
     }
-
     LOG(`✅ Sent reply to "${username}": "${text.slice(0, 60)}"`);
   }
 
   // ── Main monitor loop ───────────────────────────────────────────────────────
+  // seenMessages: in-memory dedup within this page session (prevents double-send
+  // if a badge flickers or MutationObserver fires twice for the same item).
+  const seenMessages = new Map(); // username → preview text we already forwarded this session
+  let initialized = false;
 
-  const seenMessages = new Map();
-  let initialized   = false;
-
-  function scanChats() {
+  async function scanChats() {
     if (!isContextValid()) { shutdown("context lost during scan"); return; }
     const items = getConvItems();
     if (!items.length) return;
@@ -246,28 +265,46 @@
       if (!username || !preview) continue;
 
       if (!initialized) {
+        // Initial scan: record the current preview so we can detect future changes.
+        // ALSO forward right now if:
+        //   (a) the item has an unread badge, AND
+        //   (b) we haven't already forwarded this exact preview for this user
+        //       (checked against persisted storage, which survives page refreshes)
         seenMessages.set(username, preview);
+        if (hasUnread && chatForwarded[username] !== preview) {
+          LOG(`Init-forward (unread on load): ${username}: "${preview.slice(0, 60)}"`);
+          await forwardToTelegram(username, preview);
+        }
         continue;
       }
 
+      // Post-init: only act when the badge is visible
       if (!hasUnread) continue;
-      const lastSeen = seenMessages.get(username);
-      if (lastSeen === preview) continue;
+
+      // Avoid forwarding the same message twice in the same session
+      if (seenMessages.get(username) === preview) continue;
+
+      // Avoid re-forwarding something we already sent to Telegram (survives refresh)
+      if (chatForwarded[username] === preview) {
+        seenMessages.set(username, preview); // keep in-memory map in sync
+        continue;
+      }
 
       seenMessages.set(username, preview);
-      forwardToTelegram(username, preview);
+      LOG(`New message from ${username}: "${preview.slice(0, 60)}"`);
+      await forwardToTelegram(username, preview);
     }
 
     if (!initialized) {
       initialized = true;
-      LOG(`Initialized — ${seenMessages.size} existing conversations snapshotted`);
+      LOG(`Initialized — ${seenMessages.size} conversations snapshotted`);
     }
   }
 
   // ── Startup ─────────────────────────────────────────────────────────────────
-
-  await sleep(2000);
-  scanChats();
+  await sleep(2000); // Wait for page to fully render
+  await loadChatForwarded();
+  await scanChats();
 
   const obs = new MutationObserver(() => {
     if (!isContextValid()) { shutdown("context lost in MutationObserver"); return; }
