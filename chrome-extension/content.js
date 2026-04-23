@@ -355,7 +355,7 @@
   // Z2U file field names to probe when CDP couldn't decode the multipart body
   const Z2U_FILE_FIELDS = ["upfile", "file", "upload", "excel", "formFile"];
 
-  async function tryUploadWithField(url, method, fieldName, extraFields, file, orderId) {
+  async function tryUploadWithField(url, method, fieldName, extraFields, file, orderId, csrfToken) {
     const formData = new FormData();
     // Attach extra string fields first (order_id, etc.)
     for (const field of (extraFields || [])) {
@@ -371,7 +371,17 @@
     formData.append(fieldName, file, file.name);
     log("UPLOAD-API", `  Trying file field="${fieldName}" + ${(extraFields||[]).filter(f=>f.type!=="file").map(f=>f.key).join(",")}`);
 
-    const res = await fetch(url, { method: method || "POST", body: formData, credentials: "include" });
+    // Build request headers — include CSRF token and browser-like headers so
+    // Z2U's middleware treats this as a legitimate same-origin XHR request.
+    const headers = {
+      "X-Requested-With": "XMLHttpRequest",
+    };
+    if (csrfToken) {
+      headers["X-XSRF-TOKEN"]  = csrfToken;
+      headers["X-CSRF-TOKEN"]  = csrfToken;
+    }
+
+    const res = await fetch(url, { method: method || "POST", body: formData, credentials: "include", headers });
     const text = await res.text();
     log("UPLOAD-API", `  HTTP ${res.status} → ${text.slice(0, 300)}`);
 
@@ -419,10 +429,10 @@
     return /uploadOrderImg|uploadImg|uploadImage|orderImg/i.test(url || "");
   }
 
-  async function tryEndpoint(epUrl, epMethod, extraFields, file, orderId, label) {
+  async function tryEndpoint(epUrl, epMethod, extraFields, file, orderId, label, csrfToken) {
     for (const fieldName of Z2U_FILE_FIELDS) {
       try {
-        const ok = await tryUploadWithField(epUrl, epMethod, fieldName, extraFields, file, orderId);
+        const ok = await tryUploadWithField(epUrl, epMethod, fieldName, extraFields, file, orderId, csrfToken);
         if (ok) {
           log("UPLOAD-API", `✅ [${label}] field="${fieldName}" worked!`);
           return fieldName;
@@ -435,7 +445,7 @@
     return null;
   }
 
-  async function directApiUpload(file, orderId) {
+  async function directApiUpload(file, orderId, csrfToken) {
     const stored = await new Promise((r) =>
       chrome.storage.local.get(["z2uUploadEndpoint"], (d) => r(d.z2uUploadEndpoint))
     );
@@ -454,7 +464,7 @@
         const extraFields = stored.fields.filter((f) => f.type !== "file");
         log("UPLOAD-API", `Using captured field name: "${fieldName}"`);
         try {
-          const ok = await tryUploadWithField(stored.url, stored.method, fieldName, extraFields, file, orderId);
+          const ok = await tryUploadWithField(stored.url, stored.method, fieldName, extraFields, file, orderId, csrfToken);
           if (ok) return true;
           warn("UPLOAD-API", `Stored endpoint returned empty data — will probe fallbacks`);
         } catch (e) {
@@ -463,7 +473,7 @@
       } else {
         // Case 2: probe field names on stored endpoint
         const extraFields = (stored.fields || []).filter((f) => f.type !== "file");
-        const winField = await tryEndpoint(stored.url, stored.method || "POST", extraFields, file, orderId, "stored");
+        const winField = await tryEndpoint(stored.url, stored.method || "POST", extraFields, file, orderId, "stored", csrfToken);
         if (winField) {
           const updatedFields = [...extraFields, { key: winField, type: "file" }];
           chrome.storage.local.set({ z2uUploadEndpoint: { ...stored, fields: updatedFields, probeFields: false } });
@@ -481,7 +491,7 @@
     for (const ep of Z2U_KNOWN_ENDPOINTS) {
       if (ep.url === storedUrl) continue;
       log("UPLOAD-API", `Probing fallback: ${ep.method} ${ep.url}`);
-      const winField = await tryEndpoint(ep.url, ep.method, [], file, orderId, ep.url.split("/").pop());
+      const winField = await tryEndpoint(ep.url, ep.method, [], file, orderId, ep.url.split("/").pop(), csrfToken);
       if (winField) {
         // Save the discovered endpoint so we use it directly next time
         const saved = {
@@ -511,26 +521,13 @@
     const _params  = new URLSearchParams(window.location.search);
     const _orderId = _params.get("order_id") || _params.get("orderId") || "";
 
-    // ── Step A: Try direct API upload (fastest path, bypasses modal entirely) ─
-    // This works once injected.js has captured Z2U's upload endpoint from a
-    // previous successful upload (manual or automated).
-    log("UPLOAD", `[A] Trying direct API upload…`);
-    try {
-      const apiOk = await directApiUpload(file, _orderId);
-      if (apiOk) {
-        log("UPLOAD", `[A] ✅ Direct API upload succeeded. Waiting for page to update…`);
-        await sleep(2500);
-        // Skip straight to the quantity step (if it appeared) then Confirm Delivered
-        // Re-use the same C4 / D / E logic below by jumping past the modal steps.
-        // We signal this by returning the shared confirm-flow below.
-        return await confirmDeliveredFlow(quantity);
-      }
-      // apiOk === null means no saved endpoint → fall through to UI approach
-    } catch (apiErr) {
-      warn("UPLOAD", `[A] Direct API upload failed: ${apiErr.message} — falling back to UI approach`);
-    }
+    // ── Step A: UI Injection is the PRIMARY strategy ─────────────────────────
+    // The browser handles all session cookies, CSRF tokens, and auth headers
+    // automatically when the upload goes through the real page input + modal.
+    // Direct API upload (which can return false-positives on CSRF rejection) has
+    // been moved to a fallback AFTER the UI path fails.
 
-    // ── Step A2: Close any open modals (UI fallback path) ────────────────────
+    // ── Step A2: Close any open modals ───────────────────────────────────────
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await sleep(500);
 
@@ -772,7 +769,34 @@
     }
 
     if (!uploadAccepted) {
-      err("UPLOAD", `[C3] Submit button still in DOM after 12 s — upload failed. Aborting.`);
+      warn("UPLOAD", `[C3] UI upload did not complete — trying direct API with session cookies as fallback…`);
+
+      // ── Step Z: Direct API fallback with CSRF cookie injection ───────────
+      // Read the XSRF-TOKEN cookie (non-httpOnly on most Laravel/PHP stacks)
+      // and inject it as the X-XSRF-TOKEN request header so Z2U's CSRF
+      // middleware accepts the programmatic POST.
+      const csrfRaw = document.cookie
+        .split(";")
+        .map((c) => c.trim())
+        .find((c) => /^XSRF-TOKEN=/i.test(c));
+      const csrfToken = csrfRaw ? decodeURIComponent(csrfRaw.split("=").slice(1).join("=")) : "";
+      if (csrfToken) {
+        log("UPLOAD", `[Z] XSRF-TOKEN found — will include X-XSRF-TOKEN header`);
+      } else {
+        warn("UPLOAD", `[Z] No XSRF-TOKEN in document.cookie — direct API may still fail`);
+      }
+
+      try {
+        const apiOk = await directApiUpload(file, _orderId, csrfToken);
+        if (apiOk) {
+          log("UPLOAD", `[Z] ✅ Direct API fallback succeeded.`);
+          await sleep(1500);
+          return await confirmDeliveredFlow(quantity);
+        }
+        err("UPLOAD", `[Z] Direct API fallback returned no data — giving up.`);
+      } catch (apiErr) {
+        err("UPLOAD", `[Z] Direct API fallback threw: ${apiErr.message}`);
+      }
       return false;
     }
 
