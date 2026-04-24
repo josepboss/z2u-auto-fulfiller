@@ -587,31 +587,12 @@
       warn("UPLOAD", `[B] Download to disk failed (non-fatal): ${dlResult.error}`);
     }
 
-    // ── Step C: Direct API upload (PRIMARY — no modal, no CDP, no detection) ─
-    // The content script runs in Z2U's origin so fetch() carries all session
-    // cookies automatically. Z2U cannot distinguish this from their own frontend
-    // making the same request.
-    log("UPLOAD", `[C] Trying direct API upload…`);
-    const csrfRaw = document.cookie.split(";")
-      .map((c) => c.trim())
-      .find((c) => /^XSRF-TOKEN=/i.test(c));
-    const csrfToken = csrfRaw ? decodeURIComponent(csrfRaw.split("=").slice(1).join("=")) : "";
-    if (csrfToken) log("UPLOAD", "[C] XSRF-TOKEN found.");
-
-    let apiOk = false;
-    try {
-      apiOk = await directApiUpload(file, _orderId, csrfToken);
-    } catch (e) {
-      warn("UPLOAD", `[C] directApiUpload threw: ${e.message}`);
-    }
-
-    if (apiOk) {
-      log("UPLOAD", "[C] ✅ Direct API (same-origin fetch) succeeded — skipping modal.");
-      await sleep(1000);
-      return await confirmDeliveredFlow(quantity);
-    }
-
-    warn("UPLOAD", "[C] Direct same-origin API failed.");
+    // ── Step C: Direct API upload — DISABLED ─────────────────────────────────
+    // The endpoint-probing approach causes false positives: one of the guessed
+    // URLs returns HTTP 200 with a JSON body that looks like success, but the
+    // file is NOT actually uploaded.  This causes confirmDeliveredFlow to run
+    // on an empty order, which fails, and the extension loops forever.
+    // Skipping directly to the bridge (C_LOCAL) which is proven reliable.
 
     // ── Step C_LOCAL: Local Playwright Bridge ─────────────────────────────────
     // Sends the filled XLSX to bridge.py running on your local machine.
