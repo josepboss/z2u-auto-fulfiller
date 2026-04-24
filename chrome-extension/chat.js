@@ -251,109 +251,148 @@
     return false;
   }
 
+  // ── Find the message input in the right (chat) panel ──────────────────────
+  function findChatInput() {
+    const SIDEBAR_SEL =
+      '[class*="sideBar"], [class*="sidebar"], [class*="chatList"], ' +
+      '[class*="chat-list"], [class*="userList"], aside, nav';
+
+    // Collect ALL visible textarea and contenteditable elements outside the sidebar
+    const candidates = [];
+    for (const el of document.querySelectorAll('textarea, div[contenteditable="true"], input[type="text"]')) {
+      if (!el.offsetParent) continue;                   // invisible
+      if (el.closest(SIDEBAR_SEL)) continue;            // inside sidebar
+      candidates.push(el);
+    }
+
+    if (!candidates.length) return null;
+
+    // Prefer the one whose nearest ancestor contains "send"-like context, else last visible
+    const preferred = candidates.find(el => {
+      const ancestor = el.closest('[class*="input"], [class*="compose"], [class*="editor"], [class*="msg"], [class*="chat"], [class*="bottom"], [class*="footer"], [class*="reply"]');
+      return !!ancestor;
+    });
+
+    return preferred || candidates[candidates.length - 1];
+  }
+
+  // ── Inject text into any React-controlled input ─────────────────────────────
+  async function injectText(input, text) {
+    input.focus();
+    input.click();
+    await sleep(100);
+
+    const isCE = input.getAttribute("contenteditable") === "true";
+
+    // Method 1 (best for both types): execCommand "insertText"
+    // The browser routes this through native IME → React's synthetic event system.
+    if (isCE) input.textContent = "";
+    else {
+      // Clear textarea first
+      const proto = input.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (setter) setter.call(input, "");
+      else input.value = "";
+    }
+
+    const execOk = document.execCommand("insertText", false, text);
+    LOG(`injectText: execCommand insertText → ${execOk}, value="${(input.value || input.textContent || "").slice(0,40)}"`);
+
+    // Method 2: dispatch a proper InputEvent (React 16/17 listens for this)
+    if (!isCE) {
+      input.dispatchEvent(new InputEvent("input", {
+        bubbles: true, cancelable: true,
+        inputType: "insertText", data: text,
+      }));
+    }
+    input.dispatchEvent(new Event("input",  { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    // Method 3: drive React's internal fiber onChange directly
+    const reacted = fireReactChange(input, text);
+    LOG(`injectText: fireReactChange → ${reacted}`);
+
+    // Verify something landed
+    const landed = (input.value || input.textContent || "").trim();
+    LOG(`injectText: content after injection = "${landed.slice(0,60)}"`);
+    return landed.length > 0;
+  }
+
+  // ── Find the send button in the chat panel ──────────────────────────────────
+  function findSendButton(chatInputEl) {
+    const SIDEBAR_SEL =
+      '[class*="sideBar"], [class*="sidebar"], [class*="chatList"], ' +
+      '[class*="chat-list"], aside, nav';
+
+    // Look for buttons in the same panel as the input first
+    const panel = chatInputEl?.closest(
+      '[class*="input"], [class*="bottom"], [class*="footer"], [class*="compose"], [class*="editor"], [class*="chat"], [class*="msg"]'
+    ) || document.body;
+
+    const allBtns = Array.from(panel.querySelectorAll("button, [role='button']"));
+
+    // 1. Named send button
+    const named = allBtns.find(b => {
+      if (!b.offsetParent || b.closest(SIDEBAR_SEL)) return false;
+      const txt  = (b.textContent || "").trim().toLowerCase();
+      const cls  = (b.className   || "").toLowerCase();
+      const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+      const ttip = (b.getAttribute("title") || "").toLowerCase();
+      return /send|submit|发送|确认/.test(txt + " " + cls + " " + aria + " " + ttip);
+    });
+    if (named) return named;
+
+    // 2. If there's only 1 visible button in the panel it's almost certainly Send
+    const visible = allBtns.filter(b => b.offsetParent && !b.closest(SIDEBAR_SEL));
+    if (visible.length === 1) return visible[0];
+
+    // 3. Last visible button (send is usually on the right / bottom-right)
+    return visible[visible.length - 1] || null;
+  }
+
   async function sendReplyToUser(username, text) {
     const item = findConvByUsername(username);
     if (!item) { WARN(`Sidebar item for "${username}" not found`); return; }
 
-    // Click the conversation and wait up to 4 s for the input to appear
     item.click();
-    LOG(`Clicked "${username}" chat — waiting for message input…`);
+    LOG(`Clicked "${username}" — waiting up to 5 s for chat input…`);
 
-    // Ordered selector cascade: specific → general; excludes sidebar elements
-    const INPUT_SELECTORS = [
-      '[class*="messageInput"] textarea',
-      '[class*="chatInput"] textarea',
-      '[class*="inputBox"] textarea',
-      '[class*="msgInput"] textarea',
-      '[class*="message-input"] textarea',
-      '[class*="chat-input"] textarea',
-      'div[contenteditable="true"][class*="input"]',
-      'div[contenteditable="true"][class*="msg"]',
-      'div[contenteditable="true"][class*="chat"]',
-      'div[contenteditable="true"][class*="editor"]',
-      'div[contenteditable="true"][class*="compose"]',
-      'div[contenteditable="true"][class*="text"]',
-      // Broad fallbacks: any visible contenteditable/textarea NOT inside the sidebar
-      'div[contenteditable="true"]',
-      'textarea',
-    ];
+    // Give SPA time to start rendering the conversation, then poll
+    await sleep(600);
 
     let input = null;
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + 4500;
     while (!input && Date.now() < deadline) {
-      for (const sel of INPUT_SELECTORS) {
-        for (const el of document.querySelectorAll(sel)) {
-          // Must be visible and NOT inside the conversation sidebar
-          if (!el.offsetParent) continue;
-          if (el.closest(
-            '[class*="sideBar"], [class*="sidebar"], [class*="chatList"], ' +
-            '[class*="chat-list"], aside, nav'
-          )) continue;
-          input = el;
-          break;
-        }
-        if (input) break;
-      }
+      input = findChatInput();
       if (!input) await sleep(300);
     }
 
-    if (!input) { WARN(`Message input not found after 5 s for "${username}"`); return; }
-    LOG(`Found input: ${input.tagName}[contenteditable="${input.getAttribute("contenteditable")}"] class="${input.className.slice(0,80)}"`);
-
-    // Focus + small pause so Z2U's UI is ready
-    input.focus();
-    input.click();
-    await sleep(150);
-
-    if (input.getAttribute("contenteditable") === "true") {
-      // Clear and insert via execCommand (browser fires native events React understands)
-      input.textContent = "";
-      document.execCommand("insertText", false, text);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      // Also try React fiber handler as belt-and-suspenders
-      fireReactChange(input, text);
-    } else {
-      // <textarea> or <input>
-      const proto = input.tagName === "TEXTAREA"
-        ? window.HTMLTextAreaElement.prototype
-        : window.HTMLInputElement.prototype;
-      const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-      if (nativeSetter) nativeSetter.call(input, text);
-      else input.value = text;
-      input.dispatchEvent(new Event("input",  { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-      // Drive React's internal state
-      if (!fireReactChange(input, text)) {
-        // Last resort: simulate keyboard events character by character is too slow;
-        // re-dispatch native input event with the value already set (covers most cases)
-        input.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
-      }
+    if (!input) {
+      WARN(`No message input found for "${username}" — run _z2uChatDebug.dumpInputs() to inspect the DOM`);
+      return;
     }
 
-    await sleep(400);
+    LOG(`Input found: <${input.tagName} contenteditable="${input.getAttribute("contenteditable")}" class="${input.className.slice(0,80)}">`);
 
-    // Find the send button — must be visible and in the chat area (not sidebar)
-    const sendBtn = Array.from(document.querySelectorAll(
-      "button, [role='button'], [class*='send'], [class*='Send'], [class*='submit']"
-    )).find(b => {
-      if (!b.offsetParent) return false; // invisible
-      if (b.closest('[class*="sideBar"], [class*="sidebar"], [class*="chatList"], aside, nav')) return false;
-      const txt  = (b.textContent || "").trim().toLowerCase();
-      const cls  = (b.className || "").toLowerCase();
-      const aria = (b.getAttribute("aria-label") || "").toLowerCase();
-      return /send|submit|发送/.test(txt + " " + cls + " " + aria);
-    });
+    const injected = await injectText(input, text);
+    if (!injected) {
+      WARN(`Text injection may have failed — content field appears empty. Attempting send anyway.`);
+    }
+
+    await sleep(300);
+
+    const sendBtn = findSendButton(input);
+    LOG(`Send button: ${sendBtn ? `<${sendBtn.tagName} class="${sendBtn.className.slice(0,60)}">` : "not found — will use Enter"}`);
 
     if (sendBtn) {
       sendBtn.click();
       LOG(`✅ Clicked send button for "${username}"`);
     } else {
-      // Fall back to Enter key (most chat apps accept Enter to send)
       const evtOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
       input.dispatchEvent(new KeyboardEvent("keydown",  evtOpts));
       input.dispatchEvent(new KeyboardEvent("keypress", evtOpts));
       input.dispatchEvent(new KeyboardEvent("keyup",    evtOpts));
-      LOG(`✅ Sent Enter key for "${username}"`);
+      LOG(`✅ Enter key sent for "${username}"`);
     }
 
     LOG(`✅ Reply dispatched to "${username}": "${text.slice(0, 60)}"`);
@@ -430,6 +469,24 @@
     },
     // Show persisted forwarded map
     forwarded: () => LOG("chatForwarded:", JSON.stringify(chatForwarded)),
+    // Dump ALL visible inputs on the page — run this after clicking a chat to
+    // see exactly what element the extension should target
+    dumpInputs: () => {
+      const all = Array.from(document.querySelectorAll('textarea, div[contenteditable="true"], input[type="text"]'));
+      LOG(`All inputs on page (${all.length} total):`);
+      all.forEach((el, i) => {
+        const vis = !!el.offsetParent;
+        const inSide = !!el.closest('[class*="sideBar"],[class*="sidebar"],[class*="chatList"],aside,nav');
+        LOG(`  [${i}] <${el.tagName} ce="${el.getAttribute("contenteditable")}" vis=${vis} inSidebar=${inSide}>`);
+        LOG(`       class="${el.className.slice(0,100)}"`);
+        LOG(`       value="${(el.value || el.textContent || "").slice(0,40)}"`);
+      });
+      const picked = findChatInput();
+      LOG(`findChatInput() picked:`, picked ? `<${picked.tagName} class="${picked.className.slice(0,80)}">` : "null");
+    },
+    // Test sending a reply to a specific username from DevTools
+    // Usage: _z2uChatDebug.testReply("buyerUsername", "hello!")
+    testReply: (username, text) => sendReplyToUser(username, text || "Test reply from extension"),
   };
 
   // ── Startup ─────────────────────────────────────────────────────────────────
