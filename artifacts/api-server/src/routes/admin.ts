@@ -6,8 +6,28 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const MAPPINGS_FILE = path.resolve(__dirname, "../../mappings.json");
-const CACHE_DIR     = path.resolve(__dirname, "../../order-cache");
+const MAPPINGS_FILE   = path.resolve(__dirname, "../../mappings.json");
+const CACHE_DIR       = path.resolve(__dirname, "../../order-cache");
+const ANALYTICS_FILE  = path.resolve(__dirname, "../../analytics.json");
+
+interface AnalyticsRecord {
+  orderId:    string;
+  title:      string;
+  quantity:   number;
+  amount:     number | null;
+  date:       string;
+  recordedAt: string;
+}
+
+function loadAnalytics(): AnalyticsRecord[] {
+  if (!fs.existsSync(ANALYTICS_FILE)) return [];
+  try { return JSON.parse(fs.readFileSync(ANALYTICS_FILE, "utf-8")); }
+  catch { return []; }
+}
+
+function saveAnalytics(records: AnalyticsRecord[]): void {
+  fs.writeFileSync(ANALYTICS_FILE, JSON.stringify(records, null, 2));
+}
 
 function loadMappings(): Record<string, string> {
   if (!fs.existsSync(MAPPINGS_FILE)) return {};
@@ -51,6 +71,7 @@ const html = `<!DOCTYPE html>
   button{margin-top:1rem;padding:.5rem 1.25rem;background:#6366f1;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-size:.875rem;font-weight:500}
   button:hover{background:#4f46e5}
   button.danger{background:#ef4444}
+  .badge{background:#6366f1;color:#fff;font-size:.65rem;font-weight:700;border-radius:.25rem;padding:.1rem .35rem;vertical-align:middle;margin-left:.35rem}
   button.danger:hover{background:#dc2626}
   button.dl{background:#0369a1;margin-top:0}
   button.dl:hover{background:#0284c7}
@@ -69,6 +90,15 @@ const html = `<!DOCTYPE html>
 <h1>Z2U &harr; Lfollowers Admin</h1>
 <p class="sub">Map Z2U Offer Titles to Lfollowers Product IDs for automated order processing.</p>
 <div id="msg"></div>
+
+<div class="card">
+  <h2>📊 Daily Revenue</h2>
+  <div id="analyticsToday" style="display:flex;gap:2.5rem;margin-bottom:1.25rem"></div>
+  <table id="analyticsTable">
+    <thead><tr><th>Date</th><th>Orders</th><th>Revenue (USD)</th><th>Avg / Order</th></tr></thead>
+    <tbody id="analyticsBody"><tr><td colspan="4" style="color:#64748b">Loading...</td></tr></tbody>
+  </table>
+</div>
 
 <div class="card">
   <h2>Add / Update Mapping</h2>
@@ -203,9 +233,52 @@ document.getElementById('serviceSelect').addEventListener('change', function() {
   if (this.value) document.getElementById('serviceId').value = this.value;
 });
 
+async function loadAnalytics() {
+  try {
+    const res = await fetch('/api/admin/analytics');
+    const data = await res.json();
+    const tbody = document.getElementById('analyticsBody');
+    const todayEl = document.getElementById('analyticsToday');
+
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b">No orders recorded yet. Analytics appear automatically when orders are detected.</td></tr>';
+      todayEl.innerHTML = '';
+      return;
+    }
+
+    const todayDate = new Date().toISOString().slice(0, 10);
+    const todayData = data.find(d => d.date === todayDate);
+    if (todayData) {
+      todayEl.innerHTML = \`
+        <div><div style="font-size:.7rem;color:#94a3b8;letter-spacing:.05em">TODAY'S REVENUE</div>
+          <div style="font-size:2rem;font-weight:700;color:#22c55e">\$\${todayData.revenue.toFixed(2)}</div></div>
+        <div><div style="font-size:.7rem;color:#94a3b8;letter-spacing:.05em">ORDERS TODAY</div>
+          <div style="font-size:2rem;font-weight:700;color:#6366f1">\${todayData.orders}</div></div>
+        <div><div style="font-size:.7rem;color:#94a3b8;letter-spacing:.05em">AVG / ORDER</div>
+          <div style="font-size:2rem;font-weight:700;color:#f59e0b">\$\${(todayData.revenue / todayData.orders).toFixed(2)}</div></div>
+      \`;
+    } else {
+      todayEl.innerHTML = '<span style="color:#64748b;font-size:.875rem">No orders today yet.</span>';
+    }
+
+    tbody.innerHTML = data.map(d => {
+      const avg = d.orders > 0 ? (d.revenue / d.orders).toFixed(2) : '—';
+      const isToday = d.date === todayDate;
+      return \`<tr\${isToday ? ' style="background:#1a2744"' : ''}>
+        <td>\${d.date}\${isToday ? ' <span class="badge">today</span>' : ''}</td>
+        <td>\${d.orders}</td>
+        <td style="color:#22c55e;font-weight:600">\$\${d.revenue.toFixed(2)}</td>
+        <td style="color:#f59e0b">\$\${avg}</td>
+      </tr>\`;
+    }).join('');
+  } catch(e) { console.error(e); }
+}
+
 loadServices();
 loadMappings();
 loadOrders();
+loadAnalytics();
+setInterval(loadAnalytics, 60000);
 </script>
 </body>
 </html>`;
@@ -253,6 +326,47 @@ router.get("/admin/cached-orders/:orderId/download", (req, res) => {
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="Z2U_delivery_temp_${safe}.xlsx"`);
   res.send(fs.readFileSync(filePath));
+});
+
+// ── Analytics ─────────────────────────────────────────────────────────────────
+
+router.post("/admin/analytics/record", (req, res) => {
+  const { orderId, title, quantity, amount } = req.body as {
+    orderId: string; title?: string; quantity?: number; amount?: number | null;
+  };
+  if (!orderId) { res.status(400).json({ error: "orderId required" }); return; }
+
+  const records = loadAnalytics();
+  const exists   = records.some((r) => r.orderId === orderId);
+  if (!exists) {
+    const now = new Date();
+    records.push({
+      orderId,
+      title:      title      ?? "",
+      quantity:   quantity   ?? 0,
+      amount:     typeof amount === "number" && amount > 0 ? amount : null,
+      date:       now.toISOString().slice(0, 10),
+      recordedAt: now.toISOString(),
+    });
+    saveAnalytics(records);
+    console.log(`[analytics] recorded orderId=${orderId} amount=${amount ?? "null"}`);
+  }
+  res.json({ ok: true, duplicate: exists });
+});
+
+router.get("/admin/analytics", (_req, res) => {
+  const records = loadAnalytics();
+  const byDate: Record<string, { orders: number; revenue: number }> = {};
+  for (const r of records) {
+    if (!byDate[r.date]) byDate[r.date] = { orders: 0, revenue: 0 };
+    byDate[r.date].orders++;
+    if (typeof r.amount === "number" && r.amount > 0) byDate[r.date].revenue += r.amount;
+  }
+  const sorted = Object.entries(byDate)
+    .map(([date, d]) => ({ date, ...d, revenue: Math.round(d.revenue * 100) / 100 }))
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 30);
+  res.json(sorted);
 });
 
 // ── Pending chat-reply queue ──────────────────────────────────────────────────
