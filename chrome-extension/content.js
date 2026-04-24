@@ -355,29 +355,34 @@
   // Z2U file field names to probe when CDP couldn't decode the multipart body
   const Z2U_FILE_FIELDS = ["upfile", "file", "upload", "excel", "formFile"];
 
-  async function tryUploadWithField(url, method, fieldName, extraFields, file, orderId, csrfToken) {
+  async function tryUploadWithField(url, method, fieldName, extraFields, file, orderId, csrfToken, note) {
     const formData = new FormData();
-    // Attach extra string fields first (order_id, etc.)
+    // Attach extra string fields first (order_id, note, etc.)
     for (const field of (extraFields || [])) {
       if (field.type !== "file") {
         const val = /^Z\d+$/i.test(field.value) ? orderId : (field.value || "");
         formData.append(field.key, val);
       }
     }
-    // If orderId and no explicit orderId/order_id field was captured, inject it
     if (orderId && !(extraFields || []).some((f) => /order_?id/i.test(f.key))) {
       formData.append("order_id", orderId);
     }
+    // Z2U's upload modal requires a "note" field — include it always
+    const noteValue = note || "Delivered";
+    if (!(extraFields || []).some((f) => /^note$/i.test(f.key))) {
+      formData.append("note", noteValue);
+    }
     formData.append(fieldName, file, file.name);
-    log("UPLOAD-API", `  Trying file field="${fieldName}" + ${(extraFields||[]).filter(f=>f.type!=="file").map(f=>f.key).join(",")}`);
+    log("UPLOAD-API", `  Trying field="${fieldName}" note="${noteValue}" + ${(extraFields||[]).filter(f=>f.type!=="file").map(f=>f.key).join(",")}`);
 
-    // Build request headers — include CSRF token and browser-like headers so
-    // Z2U's middleware treats this as a legitimate same-origin XHR request.
+    // Headers that make this look like a legitimate same-origin XHR request
     const headers = {
       "X-Requested-With": "XMLHttpRequest",
+      "Referer": window.location.href,
+      "Origin": window.location.origin,
     };
     if (csrfToken) {
-      headers["X-XSRF-TOKEN"]  = csrfToken;
+      headers["X-XSRF-TOKEN"] = csrfToken;
       headers["X-CSRF-TOKEN"]  = csrfToken;
     }
 
@@ -420,8 +425,14 @@
   // the bulk delivery XLSX template.  Including it causes false-positive
   // "upload succeeded" results which skip the real upload and confirm delivery empty.
   const Z2U_KNOWN_ENDPOINTS = [
-    { url: "https://www.z2u.com/sellOrder/uploadSellForm", method: "POST" },
-    { url: "https://www.z2u.com/SellOrder/uploadSellForm", method: "POST" },
+    { url: "https://www.z2u.com/sellOrder/uploadSellForm",   method: "POST" },
+    { url: "https://www.z2u.com/SellOrder/uploadSellForm",   method: "POST" },
+    { url: "https://www.z2u.com/sellOrder/uploadDelivery",   method: "POST" },
+    { url: "https://www.z2u.com/sellOrder/deliveryUpload",   method: "POST" },
+    { url: "https://www.z2u.com/sellOrder/uploadFile",       method: "POST" },
+    { url: "https://www.z2u.com/api/sellOrder/uploadSellForm", method: "POST" },
+    { url: "https://www.z2u.com/api/sellOrder/uploadDelivery", method: "POST" },
+    { url: "https://www.z2u.com/api/upload/sellForm",        method: "POST" },
   ];
 
   // Returns true if a URL is the image-evidence endpoint (wrong for XLSX delivery)
@@ -525,50 +536,60 @@
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await sleep(500);
 
-    // ── Step B: Download file to disk BEFORE opening the modal ──────────────
-    // File appears in Chrome's download bar so the user can see it.
-    // We do NOT touch any file input yet — the modal will open empty.
-    log("UPLOAD", `[B] Downloading XLSX to disk before opening modal…`);
+    // ── Step B: Download file to disk (visual confirmation for the user) ──────
+    log("UPLOAD", `[B] Downloading XLSX to disk…`);
     const dlResult = await new Promise((resolve) => {
       chrome.runtime.sendMessage(
         { type: "CDP_DOWNLOAD_FILE", fileBytes: Array.from(filledBytes), filename: uploadName },
-        (r) => resolve(r || { ok: false, error: "No response from background" })
+        (r) => resolve(r || { ok: false, error: "No response" })
       );
     });
-    if (!dlResult.ok) {
-      err("UPLOAD", `[B] Download failed: ${dlResult.error}`);
-      return false;
+    if (dlResult.ok) {
+      log("UPLOAD", `[B] ✅ File on disk: "${dlResult.filePath}"`);
+    } else {
+      warn("UPLOAD", `[B] Download to disk failed (non-fatal): ${dlResult.error}`);
     }
-    const onDiskPath = dlResult.filePath;
-    log("UPLOAD", `[B] ✅ File on disk: "${onDiskPath}"`);
 
-    // ── Step C: Click "Upload Form" — modal opens EMPTY ──────────────────────
-    log("UPLOAD", `[C] Clicking "Upload Form"…`);
-    const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 5000);
-    if (!uploadFormBtn) {
-      warn("UPLOAD", `[C] "Upload Form" button not found.`);
-      return false;
+    // ── Step C: Direct API upload (PRIMARY — no modal, no CDP, no detection) ─
+    // The content script runs in Z2U's origin so fetch() carries all session
+    // cookies automatically. Z2U cannot distinguish this from their own frontend
+    // making the same request.
+    log("UPLOAD", `[C] Trying direct API upload…`);
+    const csrfRaw = document.cookie.split(";")
+      .map((c) => c.trim())
+      .find((c) => /^XSRF-TOKEN=/i.test(c));
+    const csrfToken = csrfRaw ? decodeURIComponent(csrfRaw.split("=").slice(1).join("=")) : "";
+    if (csrfToken) log("UPLOAD", "[C] XSRF-TOKEN found.");
+
+    let apiOk = false;
+    try {
+      apiOk = await directApiUpload(file, _orderId, csrfToken);
+    } catch (e) {
+      warn("UPLOAD", `[C] directApiUpload threw: ${e.message}`);
     }
-    uploadFormBtn.click();
-    log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal…`);
-    await sleep(1500);
 
-    // ── Step C2: Wait for modal file input, then CDP-select from Downloads ────
-    // Timing strategy to avoid Z2U's debugger detection:
-    //   1. Modal opens, React component mounts — no debugger attached yet, so
-    //      any on-mount checks see a clean state.
-    //   2. We wait until the modal is fully settled.
-    //   3. THEN we attach debugger, call DOM.setFileInputFiles, and IMMEDIATELY
-    //      detach — all within ~200ms. Chrome queues the change event as an
-    //      async task, so it fires AFTER the detach, meaning Z2U's onChange
-    //      check runs with no debugger attached.
-    //   4. We then wait 4+ seconds before Submit so the banner is long gone
-    //      and any periodic Z2U checks have settled.
+    if (apiOk) {
+      log("UPLOAD", "[C] ✅ Direct API upload succeeded — skipping modal.");
+      await sleep(1000);
+      return await confirmDeliveredFlow(quantity);
+    }
+
+    warn("UPLOAD", "[C] Direct API failed — falling back to modal + JS injection.");
+
+    // ── Step D: Modal fallback — JS injection into React (no CDP at all) ──────
+    // injectFileAndUpdateReact calls React's onChange via __reactProps directly,
+    // bypassing isTrusted. Z2U cannot detect this because no debugger is involved.
     const modalEl = () => document.querySelector(
       ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
     );
 
-    // Wait up to 5s for modal + file input
+    log("UPLOAD", `[D] Clicking "Upload Form"…`);
+    const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 5000);
+    if (!uploadFormBtn) { warn("UPLOAD", `[D] "Upload Form" button not found.`); return false; }
+    uploadFormBtn.click();
+    log("UPLOAD", `[D] ✅ Clicked "Upload Form". Waiting for modal…`);
+    await sleep(1500);
+
     const modalWaitEnd = Date.now() + 5000;
     let m = null, modalFileInput = null;
     while (Date.now() < modalWaitEnd) {
@@ -580,42 +601,18 @@
       }
       await sleep(300);
     }
-
     if (!modalFileInput) {
       const allInputs = Array.from(document.querySelectorAll("input[type='file']"));
-      warn("UPLOAD", `[C2] No modal file input. All: ${allInputs.map(i=>`id="${i.id}" name="${i.name}"`).join(" | ")}`);
+      warn("UPLOAD", `[D] No modal input. All: ${allInputs.map(i=>`id="${i.id}" name="${i.name}"`).join(" | ")}`);
       modalFileInput = allInputs.find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name)) || null;
     }
+    if (!modalFileInput) { err("UPLOAD", "[D] No file input found."); return false; }
 
-    if (!modalFileInput) {
-      err("UPLOAD", "[C2] No file input found — cannot upload.");
-      return false;
-    }
-
-    log("UPLOAD", `[C2] Modal open, file input empty: id="${modalFileInput.id}"`);
-
-    // Extra wait — let the React component fully mount and run its effects
-    await sleep(2000);
-
-    // CDP: attach → setFileInputFiles → detach (all < 200ms)
-    // File appears selected from Downloads folder; change event fires after detach
-    log("UPLOAD", "[C2] CDP: attaching, selecting file from disk, detaching…");
-    const cdpResult = await new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        { type: "CDP_SET_FILE_BY_PATH", filePath: onDiskPath },
-        (r) => resolve(r || { ok: false, error: "No response from background" })
-      );
-    });
-
-    if (!cdpResult.ok) {
-      err("UPLOAD", `[C2] CDP failed: ${cdpResult.error}`);
-      return false;
-    }
-    log("UPLOAD", `[C2] ✅ File selected from Downloads. Debugger detached. Waiting for banner to clear…`);
-
-    // Wait 4 seconds — banner disappears instantly on detach, but we give Z2U's
-    // periodic debugger-check timer (if any) time to run and see no debugger.
-    await sleep(4000);
+    log("UPLOAD", `[D] Modal input found: id="${modalFileInput.id}". Injecting file…`);
+    await sleep(800 + Math.floor(Math.random() * 500));
+    await injectFileAndUpdateReact(modalFileInput, file);
+    log("UPLOAD", `[D] File injected into React state.`);
+    await sleep(800 + Math.floor(Math.random() * 500));
 
     // ── Step C2.5: Fill any required note/text fields in the modal ───────────
     // Z2U's upload modal includes a required "note" textarea. Leaving it blank
@@ -717,41 +714,13 @@
     }
 
     if (!uploadAccepted) {
-      warn("UPLOAD", `[C3] UI upload did not complete — trying direct API with session cookies as fallback…`);
-
-      // ── Step Z: Direct API fallback with CSRF cookie injection ───────────
-      // Read the XSRF-TOKEN cookie (non-httpOnly on most Laravel/PHP stacks)
-      // and inject it as the X-XSRF-TOKEN request header so Z2U's CSRF
-      // middleware accepts the programmatic POST.
-      const csrfRaw = document.cookie
-        .split(";")
-        .map((c) => c.trim())
-        .find((c) => /^XSRF-TOKEN=/i.test(c));
-      const csrfToken = csrfRaw ? decodeURIComponent(csrfRaw.split("=").slice(1).join("=")) : "";
-      if (csrfToken) {
-        log("UPLOAD", `[Z] XSRF-TOKEN found — will include X-XSRF-TOKEN header`);
-      } else {
-        warn("UPLOAD", `[Z] No XSRF-TOKEN in document.cookie — direct API may still fail`);
-      }
-
-      try {
-        const apiOk = await directApiUpload(file, _orderId, csrfToken);
-        if (apiOk) {
-          log("UPLOAD", `[Z] ✅ Direct API fallback succeeded.`);
-          await sleep(1500);
-          return await confirmDeliveredFlow(quantity);
-        }
-        err("UPLOAD", `[Z] Direct API fallback returned no data — giving up.`);
-      } catch (apiErr) {
-        err("UPLOAD", `[Z] Direct API fallback threw: ${apiErr.message}`);
-      }
+      err("UPLOAD", `[D3] Upload modal did not close — upload rejected. Check extension logs.`);
       return false;
     }
 
-    log("UPLOAD", `[C3] ✅ Submit button gone — modal closed, upload accepted by Z2U.`);
+    log("UPLOAD", `[D3] ✅ Submit button gone — modal closed, upload accepted.`);
     await sleep(500);
 
-    // ── C4 / D / E: Shared confirm-delivered flow ────────────────────────────
     return await confirmDeliveredFlow(quantity);
   }
 
