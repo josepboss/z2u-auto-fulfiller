@@ -290,83 +290,29 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
                     ),
                 }
 
-            # ── Step 5: Activate component, set file, fire React events ──────
-            # Step 5a: Click "Select File" first to make the AntD Upload
-            #          component "active" in the browser's eyes.
-            print("[bridge] Clicking 'Select File' to activate the upload component…")
-            try:
-                sel_btn.click()
-                time.sleep(0.5)
-            except Exception as e:
-                print(f"[bridge] Select File click skipped: {e}")
+            # ── Step 5: Use OS-level file chooser interception ────────────
+            # Let the modal fully settle before we start listening.
+            page.wait_for_timeout(1000)
 
-            # Step 5b: Set file on the hidden input.
-            print("[bridge] Setting file on hidden <input type='file'>…")
-            file_input = page.locator("input[type='file']").first
-            file_input.wait_for(state="attached", timeout=6000)
-            file_input.set_input_files(tmp_path)
-            print(f"[bridge] ✅ File attached: {tmp_path}")
+            # Open the listener FIRST, then physically click "Select File".
+            # Playwright intercepts the OS dialog that would normally appear,
+            # so Z2U's internal validator treats this as a real user file pick.
+            print("[bridge] Intercepting file chooser via physical click…")
+            with page.expect_file_chooser() as fc_info:
+                page.click(
+                    "button:has-text('Select File'), "
+                    ".ant-upload-drag-container"
+                )
 
-            # Step 5c: Immediately dispatch 'change' and 'input' events.
-            #          This is critical — AntD's internal validator only runs
-            #          when these events bubble up through React's synthetic
-            #          event system.  Without them, Z2U shows "not allowed".
-            file_input.evaluate(
-                "el => { "
-                "  el.dispatchEvent(new Event('change', { bubbles: true })); "
-                "  el.dispatchEvent(new Event('input',  { bubbles: true })); "
-                "}"
-            )
-            print("[bridge] Dispatched change+input events via element handle.")
+            file_chooser = fc_info.value
+            file_chooser.set_files(tmp_path)
+            print(f"[bridge] ✅ File physically attached via file chooser: {tmp_path}")
 
-            # "Shake" the page so Z2U sees the file without a folder window
-            page.evaluate(
-                "document.querySelector('input[type=\"file\"]')"
-                ".dispatchEvent(new Event('change', {bubbles: true}))"
-            )
-            print("[bridge] Dispatched page-level change event (shake).")
+            # ── Step 6: Wait for React, then click the enabled primary btn ──
+            print("[bridge] Waiting 2 s for Z2U to process the file…")
+            page.wait_for_timeout(2000)
 
-            # Step 5d: Human delay — give React 2 s to validate the file
-            #          and enable the Submit button before we look for it.
-            print("[bridge] Waiting 2 s for React to enable the Submit button…")
-            time.sleep(2.0)
-
-            # ── Step 6: Click the enabled primary button ───────────────────
-            # Use :not([disabled]) to skip the button while AntD still has it
-            # disabled during validation.
-            submit_btn = None
-            for sel in [
-                "button.ant-btn-primary:not([disabled]):has-text('SUBMIT')",
-                "button.ant-btn-primary:not([disabled]):has-text('Submit')",
-                "button.ant-btn-primary:not([disabled]):has-text('Confirm')",
-                "button.ant-btn-primary:not([disabled])",
-                "button:not([disabled]):has-text('SUBMIT')",
-                "button:not([disabled]):has-text('Submit')",
-                "button:not([disabled]):has-text('Confirm')",
-            ]:
-                try:
-                    btn = page.locator(sel).first
-                    btn.wait_for(state="visible", timeout=3000)
-                    submit_btn = btn
-                    print(f"[bridge] Found enabled submit button via: {sel!r}")
-                    break
-                except PWTimeout:
-                    continue
-                except Exception:
-                    continue
-
-            if not submit_btn:
-                _dump_page_state(page, "submit-not-found")
-                return {
-                    "ok": False,
-                    "error": (
-                        "Enabled Submit button not found. "
-                        "React may not have enabled it after file selection. "
-                        "See PAGE DUMP above."
-                    ),
-                }
-
-            submit_btn.click()
+            page.click("button.ant-btn-primary:not([disabled])")
             print("[bridge] ✅ Clicked Submit. Waiting for modal to close…")
 
             # ── Step 6: Wait for modal to close ───────────────────────────
