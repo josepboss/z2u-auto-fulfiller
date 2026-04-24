@@ -701,14 +701,24 @@
         const bridgeJson = await bridgeResp.json().catch(() => ({}));
         if (bridgeJson.ok) {
           log("UPLOAD", `[C_LOCAL] ✅ Bridge upload succeeded: ${bridgeJson.message || "ok"}`);
-          // Mark processed IMMEDIATELY so that any SPA reinit (Z2U closing the
-          // modal causes a client-side route change that re-runs content.js)
-          // does NOT trigger a second download+upload cycle.
+          // Persist a "pending confirm" flag BEFORE marking processed.
+          // If Z2U navigates/reloads the page when the upload modal closes,
+          // the current async chain dies here. The new content script checks
+          // this flag at startup and resumes confirmDeliveredFlow directly,
+          // bypassing the bgIsProcessed early-return that would otherwise skip it.
+          await chrome.storage.local.set({
+            pendingConfirmOrderId: _orderId,
+            pendingConfirmQty:     quantity,
+          });
+          // Now lock against re-upload.
           sessionDone.add(_orderId);
           await bgMarkProcessed(_orderId);
           log("UPLOAD", `[C_LOCAL] 🔒 Order ${_orderId} locked as processed — no re-upload possible.`);
           await sleep(1500);
-          return await confirmDeliveredFlow(quantity);
+          const confirmed = await confirmDeliveredFlow(quantity);
+          // Clean up the pending flag now that we finished (success or not).
+          await chrome.storage.local.remove(["pendingConfirmOrderId", "pendingConfirmQty"]);
+          return confirmed;
         }
         warn("UPLOAD", `[C_LOCAL] Bridge returned failure: ${bridgeJson.error || "unknown"}`);
       }
@@ -921,6 +931,23 @@
       // Navigate back to the list to keep the pipeline running
       log("DETAIL", `[PREPARE-ONLY] Navigating back to order list.`);
       window.location.href = "https://www.z2u.com/sellOrder/index";
+      return;
+    }
+
+    // ── [0] Resume pending Confirm Delivery after page reload ─────────────────
+    // If Z2U navigated/reloaded the page after the bridge uploaded the XLSX,
+    // the previous async chain was killed before confirmDeliveredFlow could run.
+    // We stored pendingConfirmOrderId + pendingConfirmQty to survive that reload.
+    // This check MUST come before [4] bgIsProcessed, which would otherwise
+    // return early (the order IS marked processed to block re-upload).
+    const { pendingConfirmOrderId, pendingConfirmQty } = await new Promise((r) =>
+      chrome.storage.local.get(["pendingConfirmOrderId", "pendingConfirmQty"], r)
+    );
+    if (pendingConfirmOrderId && pendingConfirmOrderId === orderId) {
+      const qty = pendingConfirmQty || 1;
+      log("DETAIL", `[0] ↩ Resuming confirmDeliveredFlow for ${orderId} (qty=${qty}) after page reload.`);
+      await chrome.storage.local.remove(["pendingConfirmOrderId", "pendingConfirmQty"]);
+      await confirmDeliveredFlow(qty);
       return;
     }
 
