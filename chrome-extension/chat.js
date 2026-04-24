@@ -423,58 +423,62 @@
   }
 
   // ── Main monitor loop ───────────────────────────────────────────────────────
-  // seenMessages: in-memory dedup within this page session (prevents double-send
-  // if a badge flickers or MutationObserver fires twice for the same item).
-  const seenMessages = new Map(); // username → preview text we already forwarded this session
-  let initialized = false;
+  // seenMessages: username → last preview WE FORWARDED to Telegram this session.
+  // Updated only when we actually forward, never from no-badge items.
+  // This prevents the "MutationObserver fires 50 times while typing → seenMessages
+  // gets polluted with sidebar-preview snapshots → real messages get skipped" race.
+  const seenMessages = new Map();
+  let initialized    = false;
+  let scanning       = false; // concurrency guard: only one scanChats() runs at a time
 
   async function scanChats() {
     if (!isContextValid()) { shutdown("context lost during scan"); return; }
-    const items = getConvItems();
-    if (!items.length) {
-      if (!initialized) WARN("getConvItems() returned 0 — open DevTools and run: _z2uChatDebug.dump()");
-      return;
-    }
-    if (!initialized) LOG(`getConvItems() found ${items.length} items`);
+    if (scanning) return; // drop concurrent calls — previous scan is still running
+    scanning = true;
+    try {
+      const items = getConvItems();
+      if (!items.length) {
+        if (!initialized) WARN("getConvItems() returned 0 — open DevTools and run: _z2uChatDebug.dump()");
+        return;
+      }
+      if (!initialized) LOG(`getConvItems() found ${items.length} items`);
 
-    for (const item of items) {
-      const { username, preview, hasUnread } = extractConvInfo(item);
-      if (!username || !preview) continue;
+      for (const item of items) {
+        const { username, preview, hasUnread } = extractConvInfo(item);
+        if (!username || !preview) continue;
+
+        if (!initialized) {
+          // Initial scan: snapshot what's already visible.
+          // Forward now only if the badge is up AND we haven't forwarded this exact
+          // preview before (chatForwarded survives across page refreshes).
+          if (hasUnread && chatForwarded[username] !== preview) {
+            LOG(`Init-forward (unread on load): ${username}: "${preview.slice(0, 60)}"`);
+            await forwardToTelegram(username, preview);
+            seenMessages.set(username, preview); // record only what we actually forwarded
+          }
+          continue;
+        }
+
+        // Post-init: only act on conversations that have an unread badge
+        if (!hasUnread) continue;
+
+        // Already forwarded this exact preview in this session → skip
+        if (seenMessages.get(username) === preview) continue;
+
+        // Already forwarded this exact preview in a previous session → skip
+        if (chatForwarded[username] === preview) continue;
+
+        LOG(`New message from ${username}: "${preview.slice(0, 60)}"`);
+        await forwardToTelegram(username, preview);
+        seenMessages.set(username, preview); // record only after a successful forward
+      }
 
       if (!initialized) {
-        // Initial scan: record the current preview so we can detect future changes.
-        // ALSO forward right now if:
-        //   (a) the item has an unread badge, AND
-        //   (b) we haven't already forwarded this exact preview for this user
-        //       (checked against persisted storage, which survives page refreshes)
-        seenMessages.set(username, preview);
-        if (hasUnread && chatForwarded[username] !== preview) {
-          LOG(`Init-forward (unread on load): ${username}: "${preview.slice(0, 60)}"`);
-          await forwardToTelegram(username, preview);
-        }
-        continue;
+        initialized = true;
+        LOG(`Initialized — monitoring ${items.length} conversations`);
       }
-
-      // Post-init: only act when the badge is visible
-      if (!hasUnread) continue;
-
-      // Avoid forwarding the same message twice in the same session
-      if (seenMessages.get(username) === preview) continue;
-
-      // Avoid re-forwarding something we already sent to Telegram (survives refresh)
-      if (chatForwarded[username] === preview) {
-        seenMessages.set(username, preview); // keep in-memory map in sync
-        continue;
-      }
-
-      seenMessages.set(username, preview);
-      LOG(`New message from ${username}: "${preview.slice(0, 60)}"`);
-      await forwardToTelegram(username, preview);
-    }
-
-    if (!initialized) {
-      initialized = true;
-      LOG(`Initialized — ${seenMessages.size} conversations snapshotted`);
+    } finally {
+      scanning = false;
     }
   }
 
