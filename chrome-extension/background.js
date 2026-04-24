@@ -426,6 +426,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Separate tracking for unmapped orders where we only clicked Prepare.
+  // These are NOT fully fulfilled — kept separate so mapped orders (which
+  // may share the same orderId if mapping is added later) are not blocked.
+  if (message.type === "IS_PREPARED_ONLY") {
+    const { orderId } = message;
+    chrome.storage.local.get("preparedOnly", ({ preparedOnly }) => {
+      const set = new Set(preparedOnly || []);
+      sendResponse({ prepared: set.has(orderId) });
+    });
+    return true;
+  }
+
+  if (message.type === "MARK_PREPARED_ONLY") {
+    const { orderId } = message;
+    chrome.storage.local.get("preparedOnly", ({ preparedOnly }) => {
+      const set = new Set(preparedOnly || []);
+      set.add(orderId);
+      // Keep the set bounded (max 500 entries)
+      const arr = Array.from(set);
+      chrome.storage.local.set({ preparedOnly: arr.slice(-500) }, () => {
+        sendResponse({ ok: true });
+      });
+    });
+    return true;
+  }
+
   // ── CDP-based file injection ───────────────────────────────────────────────
   // Downloads the filled XLSX to disk then uses DOM.setFileInputFiles (CDP) to
   // attach it to Z2U's upload modal file input.  This creates a genuinely

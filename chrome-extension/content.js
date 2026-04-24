@@ -98,6 +98,21 @@
     });
   }
 
+  // For unmapped orders that only had "Preparing" clicked — separate from fully-fulfilled.
+  function bgIsPreparedOnly(orderId) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "IS_PREPARED_ONLY", orderId }, (r) =>
+        resolve(r?.prepared === true)
+      );
+    });
+  }
+
+  function bgMarkPreparedOnly(orderId) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "MARK_PREPARED_ONLY", orderId }, () => resolve());
+    });
+  }
+
   function bgMarkProcessed(orderId) {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "MARK_PROCESSED", orderId }, resolve);
@@ -871,9 +886,9 @@
           log("LIST", `Unmapped order ${orderId} already prepared this session.`);
           continue;
         }
-        const alreadyDoneUnmapped = await bgIsProcessed(orderId);
-        if (alreadyDoneUnmapped) {
-          log("LIST", `Unmapped order ${orderId} already processed.`);
+        const alreadyPrepared = await bgIsPreparedOnly(orderId);
+        if (alreadyPrepared) {
+          log("LIST", `Unmapped order ${orderId} already had Prepare clicked — skipping.`);
           continue;
         }
 
@@ -960,8 +975,9 @@
         dumpButtons("PREPARE-ONLY-STUCK");
       }
 
-      // Fire-and-forget — do NOT await, SW may be sleeping and would block indefinitely
-      chrome.runtime.sendMessage({ type: "MARK_PROCESSED", orderId }).catch(() => {});
+      // Mark as "prepare-only" (NOT fully-processed) so the list page skips it
+      // on future scans without blocking it if a mapping is added later.
+      chrome.runtime.sendMessage({ type: "MARK_PREPARED_ONLY", orderId }).catch(() => {});
 
       // Navigate back immediately — don't wait for anything
       log("DETAIL", `[PREPARE-ONLY] Navigating back to order list.`);

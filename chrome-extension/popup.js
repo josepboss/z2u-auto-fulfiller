@@ -81,7 +81,7 @@ document.getElementById("resetEndpointBtn").addEventListener("click", async () =
 
 // ── Clear history ────────────────────────────────────────────────────────────
 document.getElementById("clearBtn").addEventListener("click", async () => {
-  await chrome.storage.local.remove(["processed", "pendingOrderId", "pendingTitle"]);
+  await chrome.storage.local.remove(["processed", "preparedOnly", "pendingOrderId", "pendingTitle", "prepareOnly"]);
   const el = document.getElementById("clearMsg");
   el.textContent = "History cleared — orders can be reprocessed.";
   setTimeout(() => (el.textContent = ""), 3000);
