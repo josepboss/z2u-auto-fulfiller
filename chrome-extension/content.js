@@ -525,11 +525,24 @@
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await sleep(500);
 
-    // ── Step C: Click "Upload Form" — modal opens EMPTY ─────────────────────
-    // No pre-injection, no CDP (Z2U detects the debugger banner and blocks with
-    // "extensions to upload is not allowed"). Pure JS injection into the modal's
-    // file input is the correct approach: injectFileAndUpdateReact() calls
-    // React's own onChange handler via __reactProps, bypassing isTrusted checks.
+    // ── Step B: Download file to disk BEFORE opening the modal ──────────────
+    // File appears in Chrome's download bar so the user can see it.
+    // We do NOT touch any file input yet — the modal will open empty.
+    log("UPLOAD", `[B] Downloading XLSX to disk before opening modal…`);
+    const dlResult = await new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: "CDP_DOWNLOAD_FILE", fileBytes: Array.from(filledBytes), filename: uploadName },
+        (r) => resolve(r || { ok: false, error: "No response from background" })
+      );
+    });
+    if (!dlResult.ok) {
+      err("UPLOAD", `[B] Download failed: ${dlResult.error}`);
+      return false;
+    }
+    const onDiskPath = dlResult.filePath;
+    log("UPLOAD", `[B] ✅ File on disk: "${onDiskPath}"`);
+
+    // ── Step C: Click "Upload Form" — modal opens EMPTY ──────────────────────
     log("UPLOAD", `[C] Clicking "Upload Form"…`);
     const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 5000);
     if (!uploadFormBtn) {
@@ -540,7 +553,17 @@
     log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal…`);
     await sleep(1500);
 
-    // ── Step C2: Inject file into modal file input via React props directly ───
+    // ── Step C2: Wait for modal file input, then CDP-select from Downloads ────
+    // Timing strategy to avoid Z2U's debugger detection:
+    //   1. Modal opens, React component mounts — no debugger attached yet, so
+    //      any on-mount checks see a clean state.
+    //   2. We wait until the modal is fully settled.
+    //   3. THEN we attach debugger, call DOM.setFileInputFiles, and IMMEDIATELY
+    //      detach — all within ~200ms. Chrome queues the change event as an
+    //      async task, so it fires AFTER the detach, meaning Z2U's onChange
+    //      check runs with no debugger attached.
+    //   4. We then wait 4+ seconds before Submit so the banner is long gone
+    //      and any periodic Z2U checks have settled.
     const modalEl = () => document.querySelector(
       ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
     );
@@ -569,17 +592,30 @@
       return false;
     }
 
-    log("UPLOAD", `[C2] Modal file input found: id="${modalFileInput.id}" name="${modalFileInput.name}"`);
+    log("UPLOAD", `[C2] Modal open, file input empty: id="${modalFileInput.id}"`);
 
-    // Human-like delay before interacting
-    await sleep(800 + Math.floor(Math.random() * 600));
+    // Extra wait — let the React component fully mount and run its effects
+    await sleep(2000);
 
-    // Inject file into React state via __reactProps (no CDP, no debugger)
-    const injected = await injectFileAndUpdateReact(modalFileInput, file);
-    log("UPLOAD", `[C2] JS injection done — files.length=${injected ? 1 : 0}`);
+    // CDP: attach → setFileInputFiles → detach (all < 200ms)
+    // File appears selected from Downloads folder; change event fires after detach
+    log("UPLOAD", "[C2] CDP: attaching, selecting file from disk, detaching…");
+    const cdpResult = await new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: "CDP_SET_FILE_BY_PATH", filePath: onDiskPath },
+        (r) => resolve(r || { ok: false, error: "No response from background" })
+      );
+    });
 
-    // Human-like delay after file appears in modal
-    await sleep(800 + Math.floor(Math.random() * 500));
+    if (!cdpResult.ok) {
+      err("UPLOAD", `[C2] CDP failed: ${cdpResult.error}`);
+      return false;
+    }
+    log("UPLOAD", `[C2] ✅ File selected from Downloads. Debugger detached. Waiting for banner to clear…`);
+
+    // Wait 4 seconds — banner disappears instantly on detach, but we give Z2U's
+    // periodic debugger-check timer (if any) time to run and see no debugger.
+    await sleep(4000);
 
     // ── Step C2.5: Fill any required note/text fields in the modal ───────────
     // Z2U's upload modal includes a required "note" textarea. Leaving it blank
