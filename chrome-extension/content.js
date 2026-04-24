@@ -1121,17 +1121,26 @@
       //   • "START TRADING" button → PREPARING already clicked, skip to [7]
       //   • "PREPARING" button → fresh NEW ORDER, do full flow from [6]
 
-      // Find the template download link by text (most reliable) or by href pattern
+      // Find the XLSX delivery template download link.
+      // IMPORTANT: be specific — broad selectors like a[href*="download"] or
+      // a[href*="template"] match Z2U's app-download and unrelated links, producing
+      // false positives that make hasTemplateLink=true and skip PREPARING entirely.
       function findTemplateLink() {
         const allAnchors = Array.from(document.querySelectorAll("a, button"));
-        // Text-based: look for "download" + "template" in visible text
+        // Primary: text must say DOWNLOAD + a delivery/template-specific word
         const byText = allAnchors.find((el) => {
           const t = el.textContent?.trim().toUpperCase() || "";
-          return t.includes("DOWNLOAD") && (t.includes("TEMPLATE") || t.includes("FORM"));
+          return t.includes("DOWNLOAD") && (
+            t.includes("TEMPLATE") ||
+            t.includes("BULK DELIVERY") ||
+            t.includes("DELIVERY FORM") ||
+            t.includes("SELL FORM")
+          );
         });
         if (byText) return byText;
-        // Href-based fallback
-        return document.querySelector('a[href*="template"], a[href*=".xlsx"], a[href*="download"], a[download]');
+        // Href-based: only actual XLSX file links — do NOT use href*="download"
+        // or href*="template" as those are too broad
+        return document.querySelector('a[href*=".xlsx"], a[download][href*="sell"]');
       }
 
       const allBtnsNow = Array.from(document.querySelectorAll("button, a"));
@@ -1148,14 +1157,13 @@
       dumpButtons("DETAIL-STATE-CHECK");
 
       // ── WAIT FOR CONFIRMED guard ───────────────────────────────────────────
-      // When the order is already at "Waiting for Confirmation" the progress bar
-      // still contains the word "DELIVERING" (as a completed step label), which
-      // would otherwise trick the state machine into re-downloading + re-uploading
-      // the template.  Detect this state early and jump straight to confirm.
-      const hasWaitForConfirm = pageText.includes("WAIT FOR CONFIRM") ||
-                                pageText.includes("WAITING FOR CONFIRM");
+      // Use badgeText (the actual status badge element) NOT pageText (the full page body).
+      // pageText includes progress-bar step labels like "Waiting for confirmation"
+      // which could false-match and skip PREPARING on a NEW ORDER.
+      const hasWaitForConfirm = badgeText.includes("WAIT FOR CONFIRM") ||
+                                badgeText.includes("WAITING FOR CONFIRM");
       if (hasWaitForConfirm) {
-        log("DETAIL", `[6] 🟡 Status is WAIT FOR CONFIRMED — file already uploaded. Skipping upload, going straight to confirm delivery.`);
+        log("DETAIL", `[6] 🟡 Badge="${badgeText}" → WAIT FOR CONFIRMED — skipping upload, going straight to confirm delivery.`);
         return await confirmDeliveredFlow(quantity);
       }
 
