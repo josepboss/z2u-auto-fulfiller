@@ -305,27 +305,42 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
             file_input.wait_for(state="attached", timeout=6000)
             file_input.set_input_files(tmp_path)
             print(f"[bridge] ✅ File attached: {tmp_path}")
+
+            # Dispatch change + input events to wake up React/Ant Design's
+            # internal validator.  Without this, the component doesn't register
+            # the programmatic file selection and Z2U shows "not allowed".
+            file_input.evaluate(
+                "el => { "
+                "  el.dispatchEvent(new Event('change', { bubbles: true })); "
+                "  el.dispatchEvent(new Event('input',  { bubbles: true })); "
+                "}"
+            )
+            print("[bridge] Dispatched change+input events on file input.")
             time.sleep(1.5)  # React state update after file selection
 
-            # ── Step 6: Click Submit ───────────────────────────────────────
+            # ── Step 6: Click Submit / primary action button ───────────────
+            # Z2U uses Ant Design — the primary button carries .ant-btn-primary.
             submit_btn = None
-            for label in ["Submit", "SUBMIT", "Confirm", "OK", "确定", "提交"]:
-                for sel in [
-                    f"{MODAL_SEL} button:has-text('{label}')",
-                    f"button:has-text('{label}')",
-                ]:
-                    try:
-                        btn = page.locator(sel).first
-                        btn.wait_for(state="visible", timeout=3000)
-                        submit_btn = btn
-                        print(f"[bridge] Found submit button: '{label}'")
-                        break
-                    except PWTimeout:
-                        continue
-                    except Exception:
-                        continue
-                if submit_btn:
+            for sel in [
+                "button.ant-btn-primary:has-text('SUBMIT')",
+                "button.ant-btn-primary:has-text('Submit')",
+                "button.ant-btn-primary:has-text('Confirm')",
+                "button.ant-btn-primary",          # any primary AntD button
+                "button:has-text('SUBMIT')",
+                "button:has-text('Submit')",
+                "button:has-text('Confirm')",
+                "button:has-text('OK')",
+            ]:
+                try:
+                    btn = page.locator(sel).first
+                    btn.wait_for(state="visible", timeout=3000)
+                    submit_btn = btn
+                    print(f"[bridge] Found submit button via: {sel!r}")
                     break
+                except PWTimeout:
+                    continue
+                except Exception:
+                    continue
 
             if not submit_btn:
                 _dump_page_state(page, "submit-not-found")
@@ -447,16 +462,14 @@ def upload():
     if not file_bytes_list:
         return jsonify({"ok": False, "error": "No fileBytes in request"}), 400
 
-    suffix   = os.path.splitext(filename)[-1] or ".xlsx"
-    tmp_path = None
+    # Write to project directory (same folder as bridge.py) so the path is
+    # simple and predictable — avoids /var/folders/ macOS temp paths that
+    # some validators reject.
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    tmp_path = os.path.join(current_dir, f"upload_{order_id}.xlsx")
     try:
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=suffix,
-            prefix=f"z2u_{order_id}_",
-        ) as tmp:
-            tmp.write(bytes(file_bytes_list))
-            tmp_path = tmp.name
+        with open(tmp_path, "wb") as f:
+            f.write(bytes(file_bytes_list))
 
         print(f"\n[bridge] ▶ Upload request — orderId={order_id!r}  file={filename!r}  bytes={len(file_bytes_list)}")
         result = do_upload(tmp_path, order_id, page_url)
