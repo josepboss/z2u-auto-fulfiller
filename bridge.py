@@ -264,37 +264,29 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
 
             MODAL_SEL = ".ant-modal-content"
 
-            # ── Step 4: Wait for modal to be fully visible ────────────────
-            page.wait_for_selector(".ant-modal-content", state="visible")
-            time.sleep(1)
-            print("[bridge] ✅ Upload modal confirmed visible.")
+            # ── Step 4: Wait for the green 'Select File' button in the modal body
+            select_btn_selector = ".ant-modal-body button.ant-btn-primary"
+            page.wait_for_selector(select_btn_selector, state="visible")
+            time.sleep(1)  # let animation finish
+            print("[bridge] ✅ 'Select File' button visible in modal body.")
 
-            # ── Step 5: Intercept OS file chooser via the Select File btn ──
-            # Click the green "Select File" button inside the modal — this is
-            # the same button a human would click, so Z2U treats the resulting
-            # file selection as legitimate.
+            # ── Step 5: Physically click 'Select File' and intercept chooser ──
             print("[bridge] Intercepting file chooser via physical click…")
             with page.expect_file_chooser() as fc_info:
-                page.click(
-                    ".ant-modal-content button.ant-btn-primary, "
-                    ".ant-upload-select"
-                )
+                page.click(select_btn_selector)
 
             file_chooser = fc_info.value
             file_chooser.set_files(tmp_path)
-            print(f"[bridge] ✅ File physically attached: {tmp_path}")
+            print(f"[bridge] ✅ File attached: {tmp_path}")
 
-            # ── Step 6: Wait for Z2U to validate, then click SUBMIT ────────
-            # Clicking too fast triggers the red "Not Allowed" error.
-            print("[bridge] Waiting 2.5 s for Z2U to validate the file…")
-            time.sleep(2.5)
+            # ── Step 6: Wait for filename to appear in UI, then click SUBMIT ──
+            # 4 s ensures Z2U's validator has registered the file before we submit.
+            print("[bridge] Waiting 4 s for Z2U to register the file…")
+            time.sleep(4)
 
-            submit_btn = page.locator(
-                ".ant-modal-footer button.ant-btn-primary, "
-                "button:has-text('SUBMIT')"
-            )
-            submit_btn.click()
-            print("[bridge] ✅ SUBMIT clicked. Waiting for modal to close…")
+            submit_btn_selector = ".ant-modal-footer button.ant-btn-primary"
+            page.click(submit_btn_selector)
+            print("[bridge] ✅ SUBMIT complete. Waiting for modal to close…")
 
             # ── Step 7: Wait for modal to close ───────────────────────────
             try:
