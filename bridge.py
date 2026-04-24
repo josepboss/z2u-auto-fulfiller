@@ -466,7 +466,7 @@ def upload():
     # simple and predictable — avoids /var/folders/ macOS temp paths that
     # some validators reject.
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    tmp_path = os.path.join(current_dir, f"upload_{order_id}.xlsx")
+    tmp_path = os.path.join(current_dir, filename)
     try:
         with open(tmp_path, "wb") as f:
             f.write(bytes(file_bytes_list))
