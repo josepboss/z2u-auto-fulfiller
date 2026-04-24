@@ -11,7 +11,8 @@
     "scripting",
     "activeTab",
     "webRequest",
-    "debugger"
+    "debugger",
+    "cookies"
   ],
   "host_permissions": [
     "https://z2u.com/*",

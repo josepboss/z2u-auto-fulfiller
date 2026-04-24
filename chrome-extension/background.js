@@ -455,6 +455,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // trusted FileList at the browser-engine level — identical to the user
   // picking the file through the OS file picker — so React's onChange fires
   // with isTrusted=true and the component state is properly updated.
+  // Read ALL Z2U cookies (including httpOnly) for server-side proxy upload
+  if (message.type === "GET_Z2U_COOKIES") {
+    Promise.all([
+      chrome.cookies.getAll({ domain: "z2u.com" }),
+      chrome.cookies.getAll({ domain: "www.z2u.com" }),
+    ]).then(([a, b]) => {
+      const seen = new Set();
+      const all = [...a, ...b].filter((c) => {
+        const key = `${c.name}=${c.domain}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      console.log("[Z2U-EXT] GET_Z2U_COOKIES →", all.length, "cookies");
+      sendResponse({ ok: true, cookies: all });
+    }).catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
   // Step 1: download XLSX to disk, return the on-disk path (no DOM interaction)
   if (message.type === "CDP_DOWNLOAD_FILE") {
     const { fileBytes, filename } = message;

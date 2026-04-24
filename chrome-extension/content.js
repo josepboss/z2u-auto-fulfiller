@@ -569,12 +569,64 @@
     }
 
     if (apiOk) {
-      log("UPLOAD", "[C] ✅ Direct API upload succeeded — skipping modal.");
+      log("UPLOAD", "[C] ✅ Direct API (same-origin fetch) succeeded — skipping modal.");
       await sleep(1000);
       return await confirmDeliveredFlow(quantity);
     }
 
-    warn("UPLOAD", "[C] Direct API failed — falling back to modal + JS injection.");
+    warn("UPLOAD", "[C] Direct same-origin API failed.");
+
+    // ── Step C2: VPS server-side proxy upload ─────────────────────────────────
+    // The VPS backend POSTs to Z2U using the user's real session cookies.
+    // This runs entirely outside Chrome — Z2U's browser-side extension checks
+    // are completely irrelevant. httpOnly cookies (not readable by content script)
+    // are read by the extension background via chrome.cookies API.
+    log("UPLOAD", "[C2] Trying VPS proxy upload (server-side, outside browser)…");
+    try {
+      const cookieResult = await new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+          { type: "GET_Z2U_COOKIES" },
+          (r) => resolve(r || { ok: false, error: "No response" })
+        );
+      });
+
+      if (!cookieResult.ok) {
+        warn("UPLOAD", `[C2] Could not get Z2U cookies: ${cookieResult.error}`);
+      } else {
+        const { serverUrl } = await new Promise((r) =>
+          chrome.storage.local.get(["serverUrl"], r)
+        );
+        const base = serverUrl || CONFIG.SERVER_URL;
+        const vpsResp = await fetch(`${base}/api/admin/proxy-upload`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileBytes: Array.from(filledBytes),
+            orderId: _orderId,
+            cookies: cookieResult.cookies,
+            note: "Delivered",
+            pageUrl: window.location.href,
+          }),
+        });
+        const vpsJson = await vpsResp.json().catch(() => ({}));
+        log("UPLOAD", `[C2] VPS proxy response: ok=${vpsJson.ok} url=${vpsJson.url} field=${vpsJson.field}`);
+        if (vpsJson.ok) {
+          log("UPLOAD", "[C2] ✅ VPS proxy upload succeeded — skipping modal.");
+          await sleep(1000);
+          return await confirmDeliveredFlow(quantity);
+        }
+        warn("UPLOAD", `[C2] VPS proxy failed: ${vpsJson.error || "unknown"}`);
+        if (vpsJson.results?.length) {
+          for (const r of vpsJson.results) {
+            log("UPLOAD", `  [C2] ${r.url} field=${r.field} HTTP ${r.status} → ${r.body?.slice(0, 150)}`);
+          }
+        }
+      }
+    } catch (e) {
+      warn("UPLOAD", `[C2] VPS proxy threw: ${e.message}`);
+    }
+
+    warn("UPLOAD", "[C2] VPS proxy also failed — falling back to modal + JS injection.");
 
     // ── Step D: Modal fallback — JS injection into React (no CDP at all) ──────
     // injectFileAndUpdateReact calls React's onChange via __reactProps directly,

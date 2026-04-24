@@ -255,4 +255,109 @@ router.get("/admin/cached-orders/:orderId/download", (req, res) => {
   res.send(fs.readFileSync(filePath));
 });
 
+// ── VPS proxy upload ──────────────────────────────────────────────────────────
+// The extension cannot use CDP (Z2U detects the debugger banner) and Z2U's
+// browser-side checks block extension uploads. This endpoint runs on the VPS
+// (outside the browser entirely), uses the user's real session cookies to POST
+// multipart/form-data directly to Z2U's upload API. No browser-side checks apply.
+router.post("/admin/proxy-upload", async (req, res) => {
+  const { fileBytes, orderId, cookies, note, pageUrl } = req.body as {
+    fileBytes: number[];
+    orderId: string;
+    cookies: { name: string; value: string; domain?: string }[];
+    note?: string;
+    pageUrl?: string;
+  };
+
+  if (!fileBytes?.length || !orderId || !cookies?.length) {
+    res.status(400).json({ ok: false, error: "Missing fileBytes, orderId, or cookies" });
+    return;
+  }
+
+  // Reconstruct the XLSX file buffer
+  const buf = Buffer.from(fileBytes);
+  const noteValue = note || "Delivered";
+
+  // Build Cookie header from all Z2U cookies
+  const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+
+  // Extract CSRF/XSRF token from cookies
+  const xsrfCookie = cookies.find((c) => /^XSRF-TOKEN$/i.test(c.name));
+  const xsrfToken  = xsrfCookie ? decodeURIComponent(xsrfCookie.value) : "";
+
+  const referer = pageUrl || `https://www.z2u.com/sellOrder?order_id=${orderId}`;
+
+  const Z2U_ENDPOINTS = [
+    "https://www.z2u.com/sellOrder/uploadSellForm",
+    "https://www.z2u.com/SellOrder/uploadSellForm",
+    "https://www.z2u.com/sellOrder/uploadDelivery",
+    "https://www.z2u.com/sellOrder/deliveryUpload",
+    "https://www.z2u.com/sellOrder/uploadFile",
+    "https://www.z2u.com/api/sellOrder/uploadSellForm",
+    "https://www.z2u.com/api/sellOrder/uploadDelivery",
+  ];
+  const FILE_FIELDS = ["upfile", "file", "upload", "excel", "formFile"];
+
+  const results: { url: string; field: string; status: number; body: string }[] = [];
+
+  for (const url of Z2U_ENDPOINTS) {
+    for (const fieldName of FILE_FIELDS) {
+      try {
+        // Use Node.js native FormData (Node 18+) with Blob
+        const formData = new FormData();
+        formData.append("order_id", orderId);
+        formData.append("note", noteValue);
+        formData.append(fieldName, new Blob([buf], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }), `Z2U_delivery_${orderId}.xlsx`);
+
+        const headers: Record<string, string> = {
+          "Cookie": cookieHeader,
+          "Referer": referer,
+          "Origin": "https://www.z2u.com",
+          "X-Requested-With": "XMLHttpRequest",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        };
+        if (xsrfToken) {
+          headers["X-XSRF-TOKEN"] = xsrfToken;
+          headers["X-CSRF-TOKEN"]  = xsrfToken;
+        }
+
+        const resp = await fetch(url, {
+          method: "POST",
+          headers,
+          body: formData,
+        });
+
+        const text = await resp.text();
+        results.push({ url, field: fieldName, status: resp.status, body: text.slice(0, 400) });
+        console.log(`[proxy-upload] ${resp.status} ${url} field=${fieldName} → ${text.slice(0, 200)}`);
+
+        // Parse success
+        let json: any = null;
+        try { json = JSON.parse(text); } catch { /* not JSON */ }
+        if (json) {
+          const code = json.code ?? json.status ?? json.errCode;
+          const isOk = code === 0 || code === 200 || code === "0" || code === "200" || code === true || code === 1;
+          if (isOk && json.data != null && json.data !== "" && json.data !== false) {
+            res.json({ ok: true, url, field: fieldName, response: text.slice(0, 400), results });
+            return;
+          }
+          // If server says file/field error, try next field; if auth error stop endpoint
+          const msg = (json.msg || json.message || "").toLowerCase();
+          if (/unauthori|forbidden|login|session/i.test(msg)) break; // skip other fields for this url
+        } else if (resp.ok && !text.toLowerCase().includes("<html") && !text.toLowerCase().includes("error")) {
+          res.json({ ok: true, url, field: fieldName, response: text.slice(0, 400), results });
+          return;
+        }
+      } catch (e: any) {
+        results.push({ url, field: fieldName, status: 0, body: e.message });
+        console.error(`[proxy-upload] Error ${url} field=${fieldName}:`, e.message);
+      }
+    }
+  }
+
+  res.json({ ok: false, error: "All endpoints failed", results });
+});
+
 export default router;
