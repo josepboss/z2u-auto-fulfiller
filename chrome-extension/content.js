@@ -828,7 +828,7 @@
 
         log("LIST", `⚡ Unmapped NEW ORDER "${title}" (${orderId}) → navigating to click Prepare only`);
         sessionDone.add(orderId);
-        await chrome.storage.local.set({ prepareOnly: true, pendingOrderId: orderId });
+        await chrome.storage.local.set({ prepareOnly: true, pendingOrderId: orderId, pendingUnmappedTitle: title });
         window.location.href = detailHref;
         return;
       }
@@ -884,21 +884,28 @@
     // ── Prepare-only mode (unmapped orders) ──────────────────────────────────
     // Set by the list page when an unmapped NEW ORDER is detected.
     // We just click "Preparing" and go back — no upload, no confirm.
-    const { prepareOnly, pendingOrderId: prepareOrderId } = await new Promise((r) =>
-      chrome.storage.local.get(["prepareOnly", "pendingOrderId"], r)
+    const { prepareOnly, pendingOrderId: prepareOrderId, pendingUnmappedTitle: unmappedTitle } = await new Promise((r) =>
+      chrome.storage.local.get(["prepareOnly", "pendingOrderId", "pendingUnmappedTitle"], r)
     );
 
     if (prepareOnly && prepareOrderId === orderId) {
       log("DETAIL", `[PREPARE-ONLY] Unmapped order ${orderId} — clicking Prepare then returning to list.`);
-      await chrome.storage.local.remove(["prepareOnly", "pendingOrderId"]);
+      await chrome.storage.local.remove(["prepareOnly", "pendingOrderId", "pendingUnmappedTitle"]);
 
       const allBtns = Array.from(document.querySelectorAll("button, a"));
       const prepBtn = allBtns.find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
 
       if (prepBtn) {
         log("DETAIL", `[PREPARE-ONLY] Clicking "Preparing" button…`);
+        // If it's an anchor tag, prevent it from navigating away from the page
+        // before we can redirect to sellOrder/index ourselves.
+        if (prepBtn.tagName === "A") {
+          prepBtn.addEventListener("click", (e) => e.preventDefault(), { once: true });
+        }
         prepBtn.click();
         log("DETAIL", `[PREPARE-ONLY] ✅ Clicked.`);
+        // Wait for any AJAX triggered by the click to fire before navigating
+        await sleep(1000);
       } else {
         warn("DETAIL", `[PREPARE-ONLY] "Preparing" button not found — may already be past NEW ORDER.`);
         dumpButtons("PREPARE-ONLY-STUCK");
@@ -908,7 +915,10 @@
       // on future scans without blocking it if a mapping is added later.
       chrome.runtime.sendMessage({ type: "MARK_PREPARED_ONLY", orderId }).catch(() => {});
 
-      // Navigate back immediately — don't wait for anything
+      // Record analytics for unmapped orders (title stored from list page)
+      recordAnalytics(orderId, unmappedTitle || "", 1);
+
+      // Navigate back to the list to keep the pipeline running
       log("DETAIL", `[PREPARE-ONLY] Navigating back to order list.`);
       window.location.href = "https://www.z2u.com/sellOrder/index";
       return;
