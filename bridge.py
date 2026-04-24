@@ -264,24 +264,22 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
 
             MODAL_SEL = ".ant-modal-content"
 
-            # ── Step 4: Wait for the green 'Select File' button in the modal body
-            select_btn_selector = ".ant-modal-body button.ant-btn-primary"
-            page.wait_for_selector(select_btn_selector, state="visible")
-            time.sleep(1)  # let animation finish
-            print("[bridge] ✅ 'Select File' button visible in modal body.")
+            # ── Step 4: Wait for the .choose-file-button div ─────────────
+            select_div_selector = ".choose-file-button"
+            page.wait_for_selector(select_div_selector, state="visible", timeout=10000)
+            time.sleep(1.5)  # let modal settle
+            print("[bridge] Clicking the .choose-file-button div…")
 
-            # ── Step 5: Physically click 'Select File' and intercept chooser ──
-            print("[bridge] Intercepting file chooser via physical click…")
+            # ── Step 5: Intercept file chooser via direct div click ────────
             with page.expect_file_chooser() as fc_info:
-                page.click(select_btn_selector)
+                page.click(select_div_selector, force=True)
 
             file_chooser = fc_info.value
             file_chooser.set_files(tmp_path)
             print(f"[bridge] ✅ File attached: {tmp_path}")
 
-            # ── Step 6: Wait for filename to appear in UI, then click SUBMIT ──
-            # 4 s ensures Z2U's validator has registered the file before we submit.
-            print("[bridge] Waiting 4 s for Z2U to register the file…")
+            # ── Step 6: Give Z2U 4 s to scan the file, then click SUBMIT ──
+            print("[bridge] Waiting 4 s for Z2U to validate the file…")
             time.sleep(4)
 
             submit_btn_selector = ".ant-modal-footer button.ant-btn-primary"
