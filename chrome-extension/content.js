@@ -340,7 +340,7 @@
 
     dumpButtons("UPLOAD-BEFORE-CONFIRM");
 
-    // ── [D2] Click "Confirm Delivered" ─────────────────────────────────────
+    // ── [D2] Find "Confirm Delivered" button ───────────────────────────────
     log("UPLOAD", "[D2] Looking for 'Confirm Delivered' button…");
     const confirmBtn =
       await waitForElementByText("button", "confirm delivered", 8000) ||
@@ -351,7 +351,52 @@
       dumpButtons("UPLOAD-FAILED");
       return false;
     }
-    log("UPLOAD", `[D2] Clicking: "${confirmBtn.textContent?.trim()}"`);
+    log("UPLOAD", `[D2] Found: "${confirmBtn.textContent?.trim()}"`);
+
+    // ── [D2b] Fill inline quantity input BEFORE clicking ──────────────────
+    // Z2U renders a number/text input directly on the page (next to the
+    // Confirm Delivered button) that must be filled with the delivered count.
+    // Look inside the same container as the button, then fall back to any
+    // visible non-modal input on the page.
+    function fillInput(el, val) {
+      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      if (nativeSet) nativeSet.call(el, String(val)); else el.value = String(val);
+      el.dispatchEvent(new Event("input",  { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    const inlineInput = await (async () => {
+      const end = Date.now() + 4000;
+      while (Date.now() < end) {
+        // Priority 1: input that is a sibling or cousin of the Confirm button
+        const container = confirmBtn.closest("div, section, form, td, li") || document.body;
+        const nearby = Array.from(container.querySelectorAll("input"))
+          .find((i) => i.type !== "file" && i.type !== "hidden" && i.type !== "checkbox" && !i.readOnly);
+        if (nearby) return nearby;
+
+        // Priority 2: any visible, non-modal, non-search input on the page
+        const page = Array.from(document.querySelectorAll("input"))
+          .find((i) =>
+            i.type !== "file" && i.type !== "hidden" && i.type !== "checkbox" &&
+            !i.readOnly &&
+            !i.closest(".ant-modal, [role='dialog'], [class*='modal'], [class*='search'], header, nav") &&
+            i.offsetParent !== null
+          );
+        if (page) return page;
+        await sleep(300);
+      }
+      return null;
+    })();
+
+    if (inlineInput) {
+      fillInput(inlineInput, quantity);
+      log("UPLOAD", `[D2b] ✅ Filled inline quantity input: ${quantity}`);
+      await sleep(600);
+    } else {
+      log("UPLOAD", "[D2b] No inline quantity input found — clicking without pre-fill.");
+    }
+
+    // ── [D2c] Click Confirm Delivered ─────────────────────────────────────
     confirmBtn.click();
     await sleep(2000);
 
@@ -360,7 +405,7 @@
       ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
     );
 
-    // Fill quantity if a number input appeared in a modal
+    // Fill quantity if a number input appeared in a post-click modal
     const numInput = await (async () => {
       const end = Date.now() + 4000;
       while (Date.now() < end) {
@@ -379,12 +424,8 @@
     })();
 
     if (numInput) {
-      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-      if (nativeSet) nativeSet.call(numInput, String(quantity));
-      else numInput.value = String(quantity);
-      numInput.dispatchEvent(new Event("input",  { bubbles: true }));
-      numInput.dispatchEvent(new Event("change", { bubbles: true }));
-      log("UPLOAD", `[D3] Filled quantity: ${quantity}`);
+      fillInput(numInput, quantity);
+      log("UPLOAD", `[D3] Filled post-click modal quantity: ${quantity}`);
       await sleep(400);
     }
 
@@ -398,7 +439,6 @@
             .find((b) => /^(ok|confirm|yes)$/i.test(b.textContent?.trim() || ""));
           if (btn) return btn;
         }
-        // Also look globally for a lone OK button
         const global = Array.from(document.querySelectorAll("button"))
           .find((b) => /^(ok|confirm|yes)$/i.test(b.textContent?.trim() || ""));
         if (global) return global;
