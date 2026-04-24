@@ -253,46 +253,56 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
             upload_el.scroll_into_view_if_needed()
             time.sleep(0.4)
 
-            # ── Step 3: Click + intercept the native OS file chooser ──────
-            # Z2U's button triggers a native <input type="file"> dialog.
-            # expect_file_chooser() captures that dialog so we can set the
-            # file path without the OS picker ever appearing on screen.
-            print("[bridge] Waiting for file chooser…")
-            with page.expect_file_chooser(timeout=10000) as fc_info:
-                upload_el.click()
+            # ── Step 3: Click "Upload Form" → this opens the Upload modal ─
+            # The modal contains a "Select File" button that triggers the
+            # native OS file chooser.  We must click "Upload Form" first,
+            # wait for the modal, then intercept the file chooser on
+            # "Select File" — NOT on the "Upload Form" button itself.
+            print("[bridge] Clicking 'Upload Form' to open the upload modal…")
+            upload_el.click()
+            time.sleep(1.2)  # let the modal animate in
 
-            file_chooser = fc_info.value
-            file_chooser.set_files(tmp_path)
-            print(f"[bridge] ✅ File chooser resolved — attached: {tmp_path}")
-            time.sleep(1.5)  # wait for React to process the chosen file
-
-            # ── Step 4: Fill "Note" field in the upload popup ─────────────
             MODAL_SEL = (
                 ".ant-modal-content, [role='dialog'], "
                 "[class*='modal']:not([class*='modalClose']), [class*='Modal']"
             )
-            try:
-                modal = page.locator(MODAL_SEL).first
-                modal.wait_for(state="visible", timeout=6000)
-                note_inputs = modal.locator(
-                    "textarea:visible, input[type='text']:visible"
-                ).all()
-                for ni in note_inputs:
-                    try:
-                        if not ni.input_value().strip():
-                            ni.fill("Delivered")
-                            time.sleep(0.3)
-                            print("[bridge] Filled note field: 'Delivered'")
-                    except Exception:
-                        pass
-            except PWTimeout:
-                print("[bridge] No modal visible after file attach — trying submit directly.")
-            except Exception:
-                pass  # non-fatal
 
-            # ── Step 5: Click Submit / Confirm ────────────────────────────
+            # ── Step 4: Wait for modal, then click "Select File" ──────────
+            SELECT_FILE_SEL = (
+                "button:has-text('Select File'), "
+                "button:has-text('选择文件'), "
+                "button:has-text('Browse'), "
+                ".ant-upload button:visible, "
+                "[class*='upload'] button:visible, "
+                "label[class*='upload']:visible"
+            )
+            try:
+                sel_btn = page.locator(SELECT_FILE_SEL).first
+                sel_btn.wait_for(state="visible", timeout=8000)
+                print("[bridge] ✅ 'Select File' button found inside modal.")
+            except PWTimeout:
+                _dump_page_state(page, "select-file-not-found")
+                return {
+                    "ok": False,
+                    "error": (
+                        "'Select File' button not visible inside upload modal after 8 s. "
+                        "See PAGE DUMP above. The modal may not have opened."
+                    ),
+                }
+
+            # ── Step 5: Intercept file chooser on "Select File" click ─────
+            print("[bridge] Intercepting file chooser on 'Select File' click…")
+            with page.expect_file_chooser(timeout=10000) as fc_info:
+                sel_btn.click()
+
+            file_chooser = fc_info.value
+            file_chooser.set_files(tmp_path)
+            print(f"[bridge] ✅ File chooser resolved — attached: {tmp_path}")
+            time.sleep(1.5)  # React state update after file selection
+
+            # ── Step 6: Click Submit ───────────────────────────────────────
             submit_btn = None
-            for label in ["Submit", "Confirm", "OK", "确定", "提交"]:
+            for label in ["Submit", "SUBMIT", "Confirm", "OK", "确定", "提交"]:
                 for sel in [
                     f"{MODAL_SEL} button:has-text('{label}')",
                     f"button:has-text('{label}')",
@@ -315,13 +325,13 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
                 return {
                     "ok": False,
                     "error": (
-                        "Submit/Confirm button not found in upload popup after file attach. "
-                        "See PAGE DUMP above for what is visible."
+                        "Submit button not found in upload modal after file selection. "
+                        "See PAGE DUMP above."
                     ),
                 }
 
             submit_btn.click()
-            print("[bridge] ✅ Clicked Submit. Waiting for popup to close…")
+            print("[bridge] ✅ Clicked Submit. Waiting for modal to close…")
 
             # ── Step 6: Wait for modal to close ───────────────────────────
             try:
