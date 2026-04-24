@@ -262,62 +262,41 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
             upload_el.click()
             time.sleep(1.2)  # let the modal animate in
 
-            MODAL_SEL = (
-                ".ant-modal-content, [role='dialog'], "
-                "[class*='modal']:not([class*='modalClose']), [class*='Modal']"
-            )
+            MODAL_SEL = ".ant-modal-content"
 
-            # ── Step 4: Wait for modal, then click "Select File" ──────────
-            SELECT_FILE_SEL = (
-                "button:has-text('Select File'), "
-                "button:has-text('选择文件'), "
-                "button:has-text('Browse'), "
-                ".ant-upload button:visible, "
-                "[class*='upload'] button:visible, "
-                "label[class*='upload']:visible"
-            )
-            try:
-                sel_btn = page.locator(SELECT_FILE_SEL).first
-                sel_btn.wait_for(state="visible", timeout=8000)
-                print("[bridge] ✅ 'Select File' button found inside modal.")
-            except PWTimeout:
-                _dump_page_state(page, "select-file-not-found")
-                return {
-                    "ok": False,
-                    "error": (
-                        "'Select File' button not visible inside upload modal after 8 s. "
-                        "See PAGE DUMP above. The modal may not have opened."
-                    ),
-                }
+            # ── Step 4: Wait for modal to be fully visible ────────────────
+            page.wait_for_selector(".ant-modal-content", state="visible")
+            time.sleep(1)
+            print("[bridge] ✅ Upload modal confirmed visible.")
 
-            # ── Step 5: Use OS-level file chooser interception ────────────
-            # Let the modal fully settle before we start listening.
-            page.wait_for_timeout(1000)
-
-            # Open the listener FIRST, then physically click "Select File".
-            # Playwright intercepts the OS dialog that would normally appear,
-            # so Z2U's internal validator treats this as a real user file pick.
+            # ── Step 5: Intercept OS file chooser via the Select File btn ──
+            # Click the green "Select File" button inside the modal — this is
+            # the same button a human would click, so Z2U treats the resulting
+            # file selection as legitimate.
             print("[bridge] Intercepting file chooser via physical click…")
             with page.expect_file_chooser() as fc_info:
-                # Target the AntD upload wrapper directly; force=True bypasses
-                # visibility checks on the hidden/overlapping element.
                 page.click(
-                    ".ant-upload-select, .ant-upload-drag, [type='file']",
-                    force=True,
+                    ".ant-modal-content button.ant-btn-primary, "
+                    ".ant-upload-select"
                 )
 
             file_chooser = fc_info.value
             file_chooser.set_files(tmp_path)
-            print(f"[bridge] ✅ File physically attached to: {tmp_path}")
+            print(f"[bridge] ✅ File physically attached: {tmp_path}")
 
-            # ── Step 6: Wait for React, then click primary btn ─────────────
-            print("[bridge] Waiting 2 s for Z2U to process the file…")
-            time.sleep(2)
+            # ── Step 6: Wait for Z2U to validate, then click SUBMIT ────────
+            # Clicking too fast triggers the red "Not Allowed" error.
+            print("[bridge] Waiting 2.5 s for Z2U to validate the file…")
+            time.sleep(2.5)
 
-            page.click("button.ant-btn-primary")
-            print("[bridge] ✅ Clicked Submit. Waiting for modal to close…")
+            submit_btn = page.locator(
+                ".ant-modal-footer button.ant-btn-primary, "
+                "button:has-text('SUBMIT')"
+            )
+            submit_btn.click()
+            print("[bridge] ✅ SUBMIT clicked. Waiting for modal to close…")
 
-            # ── Step 6: Wait for modal to close ───────────────────────────
+            # ── Step 7: Wait for modal to close ───────────────────────────
             try:
                 page.locator(MODAL_SEL).first.wait_for(state="hidden", timeout=15000)
                 print("[bridge] ✅ Modal closed — upload accepted by Z2U.")
