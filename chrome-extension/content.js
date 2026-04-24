@@ -521,54 +521,51 @@
     const _params  = new URLSearchParams(window.location.search);
     const _orderId = _params.get("order_id") || _params.get("orderId") || "";
 
-    // ── Step A: UI Injection is the PRIMARY strategy ─────────────────────────
-    // The browser handles all session cookies, CSRF tokens, and auth headers
-    // automatically when the upload goes through the real page input + modal.
-    // Direct API upload (which can return false-positives on CSRF rejection) has
-    // been moved to a fallback AFTER the UI path fails.
-
-    // ── Step A2: Close any open modals ───────────────────────────────────────
+    // ── Step A: Close any open modals ────────────────────────────────────────
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await sleep(500);
 
-    // ── Step B: Find and inject into the xlsx file input ────────────────────
-    log("UPLOAD", `[B] Looking for xlsx file input (id="upfile" or name="upload")…`);
-    let input = findXlsxInput();
-
-    if (!input) {
-      err("UPLOAD", "[B] Xlsx file input not found on page.");
-      log("UPLOAD", `[B] All inputs: ${Array.from(document.querySelectorAll("input")).map(i => `type=${i.type} id=${i.id} name=${i.name}`).join(" | ")}`);
+    // ── Step B: Download file to disk FIRST (before opening the modal) ────────
+    // IMPORTANT: do NOT pre-inject into any page-level input. Pre-injection
+    // causes the modal to open with the file already selected (in milliseconds),
+    // which Z2U detects as non-human and rejects with "Please input note".
+    // The correct sequence: file on disk → open empty modal → CDP select.
+    log("UPLOAD", `[B] Downloading XLSX to disk before opening modal…`);
+    const dlResult = await new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: "CDP_DOWNLOAD_FILE", fileBytes: Array.from(filledBytes), filename: uploadName },
+        (r) => resolve(r || { ok: false, error: "No response from background" })
+      );
+    });
+    if (!dlResult.ok) {
+      err("UPLOAD", `[B] Download failed: ${dlResult.error}`);
       return false;
     }
-    log("UPLOAD", `[B] Targeting input: id="${input.id}" name="${input.name}"`);
+    const onDiskPath = dlResult.filePath;
+    log("UPLOAD", `[B] ✅ File on disk: "${onDiskPath}"`);
 
-    injectFileIntoInput(input, file);
-    log("UPLOAD", `[B] File injected (${filledBytes.length} bytes).`);
-    await sleep(800);
-
-    // ── Step C: Click "Upload Form" to open the upload modal ─────────────────
-    log("UPLOAD", `[C] Clicking "Upload Form" to open modal…`);
+    // ── Step C: Click "Upload Form" — modal will open EMPTY ──────────────────
+    log("UPLOAD", `[C] Clicking "Upload Form"…`);
     const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 5000);
     if (!uploadFormBtn) {
       warn("UPLOAD", `[C] "Upload Form" button not found.`);
       return false;
     }
     uploadFormBtn.click();
-    log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal…`);
+    log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal to open empty…`);
     await sleep(1500);
 
-    // ── Step C2: Inject file via click-interceptor (most reliable for React) ─
-    // Strategy: listen for the click event on the modal's hidden file input in
-    // capture phase, call preventDefault() to block the native OS file picker,
-    // then inject our bytes + dispatch a native "change" event.  Because the
-    // change event fires naturally (not via a programmatic set), React sees it
-    // exactly as if the user had picked a file through the dialog.
+    // ── Step C2: Wait for modal to open empty, then CDP-select from disk ────────
+    // The modal opens empty (no pre-injection). We wait for the file input to
+    // appear, pause for a human-like delay, then use CDP DOM.setFileInputFiles
+    // with the already-downloaded on-disk path. This mimics the user browsing
+    // to their Downloads folder and selecting the file — isTrusted FileList.
     const modalEl = () => document.querySelector(
       ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
     );
 
-    // Wait up to 4s for the modal + its file input to appear
-    const modalWaitEnd = Date.now() + 4000;
+    // Wait up to 5s for the modal + its file input to appear
+    const modalWaitEnd = Date.now() + 5000;
     let m = null, modalFileInput = null;
     while (Date.now() < modalWaitEnd) {
       m = modalEl();
@@ -581,78 +578,38 @@
     }
 
     if (!modalFileInput) {
-      // Log what IS in the modal to help debug
       const allInputs = Array.from(document.querySelectorAll("input[type='file']"));
-      warn("UPLOAD", `[C2] No file input found in modal. All page file inputs: ${allInputs.map(i=>`id="${i.id}" name="${i.name}"`).join(" | ")}`);
-      // Try the first non-FilePond file input on the whole page as last resort
+      warn("UPLOAD", `[C2] No modal file input. All page inputs: ${allInputs.map(i=>`id="${i.id}" name="${i.name}"`).join(" | ")}`);
       modalFileInput = allInputs.find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name)) || null;
     }
 
-    if (modalFileInput) {
-      log("UPLOAD", `[C2] Modal file input found: id="${modalFileInput.id}" name="${modalFileInput.name}"`);
-
-      // ── PRIMARY: CDP DOM.setFileInputFiles ─────────────────────────────────
-      // The background script downloads the XLSX to disk, then uses the Chrome
-      // DevTools Protocol DOM.setFileInputFiles command to attach it to the file
-      // input at the browser-engine level.  This produces a real, isTrusted
-      // FileList — identical to the user selecting the file from the OS picker —
-      // so React's onChange fires correctly and component state is properly set.
-      log("UPLOAD", "[C2] Requesting CDP file injection from background…");
-      const cdpResult = await new Promise((resolve) => {
-        chrome.runtime.sendMessage(
-          { type: "CDP_SET_FILE", fileBytes: Array.from(filledBytes), filename: uploadName },
-          (r) => resolve(r || { ok: false, error: "No response from background" })
-        );
-      });
-
-      if (cdpResult.ok) {
-        log("UPLOAD", `[C2] ✅ CDP setFileInputFiles → "${cdpResult.filePath}"`);
-        // Human-like pause: give React time to process the isTrusted change event
-        await sleep(1500);
-      } else {
-        // ── FALLBACK: JS injection (less reliable) ───────────────────────────
-        warn("UPLOAD", `[C2] CDP failed: "${cdpResult.error}" — using JS click-interceptor fallback`);
-
-        function injectIntoInput(inp, f) {
-          const dt = new DataTransfer();
-          dt.items.add(f);
-          const ns = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")?.set;
-          if (ns) ns.call(inp, dt.files);
-          else Object.defineProperty(inp, "files", { value: dt.files, configurable: true, writable: true });
-        }
-
-        let injectCount = 0;
-        let done = false;
-        await new Promise((resolve) => {
-          const safeResolve = () => { if (!done) { done = true; modalFileInput.removeEventListener("click", handler, { capture: true }); resolve(); } };
-          const handler = (e) => {
-            e.preventDefault(); e.stopPropagation(); injectCount++;
-            injectIntoInput(modalFileInput, file);
-            injectFileAndUpdateReact(modalFileInput, file);
-            modalFileInput.dispatchEvent(new Event("change", { bubbles: true }));
-            log("UPLOAD", `[C2-fb] Click #${injectCount} injected`);
-            if (injectCount >= 2) setTimeout(safeResolve, 700);
-          };
-          modalFileInput.addEventListener("click", handler, { capture: true });
-          const selectBtn = m ? Array.from(m.querySelectorAll("button, label, a")).find((b) => /select\s+file|choose\s+file|browse/i.test(b.textContent || "")) : null;
-          if (selectBtn) { log("UPLOAD", `[C2-fb] Clicking "${selectBtn.textContent?.trim()}"`); selectBtn.click(); }
-          else { log("UPLOAD", "[C2-fb] No Select File btn — clicking input directly"); modalFileInput.click(); }
-          setTimeout(() => {
-            if (injectCount === 0) {
-              log("UPLOAD", "[C2-fb] No click intercepted — direct injection");
-              injectIntoInput(modalFileInput, file); injectFileAndUpdateReact(modalFileInput, file);
-              modalFileInput.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-            safeResolve();
-          }, 5000);
-        });
-        await sleep(600);
-        await injectFileAndUpdateReact(modalFileInput, file);
-        log("UPLOAD", `[C2-fb] Done. files.length=${modalFileInput.files?.length ?? 0}`);
-      }
-    } else {
-      warn("UPLOAD", `[C2] Could not find any file input — SUBMIT will likely fail`);
+    if (!modalFileInput) {
+      err("UPLOAD", "[C2] No file input found anywhere — cannot upload.");
+      return false;
     }
+
+    log("UPLOAD", `[C2] ✅ Modal open, file input empty: id="${modalFileInput.id}" name="${modalFileInput.name}"`);
+
+    // Human-like delay: "reading the modal" before selecting file
+    await sleep(1200 + Math.floor(Math.random() * 800));
+
+    // CDP setFileInputFiles with the already-downloaded on-disk path
+    log("UPLOAD", "[C2] Requesting CDP file selection (setFileInputFiles)…");
+    const cdpResult = await new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: "CDP_SET_FILE_BY_PATH", filePath: onDiskPath },
+        (r) => resolve(r || { ok: false, error: "No response from background" })
+      );
+    });
+
+    if (!cdpResult.ok) {
+      err("UPLOAD", `[C2] CDP setFileInputFiles failed: ${cdpResult.error}`);
+      return false;
+    }
+    log("UPLOAD", "[C2] ✅ File selected via CDP — isTrusted FileList created.");
+
+    // Human-like delay: "file appeared in modal, reviewing before clicking Submit"
+    await sleep(1000 + Math.floor(Math.random() * 1000));
 
     // ── Step C2.5: Fill any required note/text fields in the modal ───────────
     // Z2U's upload modal includes a required "note" textarea. Leaving it blank

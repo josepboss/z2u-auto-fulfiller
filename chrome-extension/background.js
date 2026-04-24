@@ -455,45 +455,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // trusted FileList at the browser-engine level — identical to the user
   // picking the file through the OS file picker — so React's onChange fires
   // with isTrusted=true and the component state is properly updated.
-  if (message.type === "CDP_SET_FILE") {
+  // Step 1: download XLSX to disk, return the on-disk path (no DOM interaction)
+  if (message.type === "CDP_DOWNLOAD_FILE") {
     const { fileBytes, filename } = message;
+    cdpDownloadFileToDisk(fileBytes, filename)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  // Step 2: attach the already-downloaded file to the modal's file input via CDP
+  if (message.type === "CDP_SET_FILE_BY_PATH") {
+    const { filePath } = message;
     const tabId = sender.tab?.id;
     if (!tabId) { sendResponse({ ok: false, error: "No tab ID" }); return true; }
-    cdpSetFileOnInput(tabId, fileBytes, filename)
+    cdpSetFileByPath(tabId, filePath)
       .then(sendResponse)
       .catch((e) => sendResponse({ ok: false, error: e.message }));
     return true;
   }
 });
 
-// ── CDP-based file injection helper ──────────────────────────────────────────
-// Uses chrome.downloads to save the XLSX to disk, then DOM.setFileInputFiles
-// (Chrome DevTools Protocol) to attach it to the upload modal's file input.
-// The result is a real, isTrusted FileList — React handles it exactly as if
-// the user selected the file through the OS native file picker.
-async function cdpSetFileOnInput(tabId, fileBytes, filename) {
-  // ── 1. Convert bytes to base64 data URL (safe in MV3 service workers) ──────
+// ── CDP helper 1: download XLSX bytes to disk, return on-disk path ───────────
+// Called BEFORE the upload modal is opened. The download appears in Chrome's
+// download bar so the user can see it — then the modal opens empty.
+async function cdpDownloadFileToDisk(fileBytes, filename) {
   const bytes = new Uint8Array(fileBytes);
   let binary = "";
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   const base64 = btoa(binary);
   const dataUrl = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${base64}`;
-
-  // ── 2. Download to the user's Downloads folder ────────────────────────────
   const dlFilename = filename || "Z2U_delivery_temp.xlsx";
-  const downloadedPath = await new Promise((resolve, reject) => {
+
+  const filePath = await new Promise((resolve, reject) => {
     chrome.downloads.download(
       { url: dataUrl, filename: dlFilename, conflictAction: "overwrite", saveAs: false },
       (downloadId) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
+        if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
         const timeout = setTimeout(() => {
           chrome.downloads.onChanged.removeListener(onChange);
           reject(new Error("Download timed out after 15s"));
         }, 15000);
-
         function onChange(delta) {
           if (delta.id !== downloadId) return;
           if (delta.state?.current === "complete") {
@@ -514,9 +516,15 @@ async function cdpSetFileOnInput(tabId, fileBytes, filename) {
     );
   });
 
-  console.log("[Z2U-CDP] File saved to disk:", downloadedPath);
+  console.log("[Z2U-CDP] ✅ File saved to disk:", filePath);
+  return { ok: true, filePath };
+}
 
-  // ── 3. Attach debugger (skip if already attached for capture mode) ─────────
+// ── CDP helper 2: attach on-disk file to the modal's file input via CDP ───────
+// Called AFTER the modal is open and empty, with a human-like delay between.
+// DOM.setFileInputFiles creates an isTrusted FileList at the browser-engine
+// level — identical to the user browsing Downloads and selecting the file.
+async function cdpSetFileByPath(tabId, filePath) {
   const alreadyAttached = captureTabIds.has(tabId);
   if (!alreadyAttached) {
     await chrome.debugger.attach({ tabId }, "1.3");
@@ -524,9 +532,7 @@ async function cdpSetFileOnInput(tabId, fileBytes, filename) {
   } else {
     console.log("[Z2U-CDP] Reusing existing debugger session on tab", tabId);
   }
-
   try {
-    // ── 4. Find file input via CDP DOM query ──────────────────────────────────
     const doc = await chrome.debugger.sendCommand({ tabId }, "DOM.getDocument", { depth: 1 });
     const selectors = [
       ".ant-modal input[type='file']",
@@ -538,26 +544,22 @@ async function cdpSetFileOnInput(tabId, fileBytes, filename) {
     let inputNodeId = 0;
     for (const sel of selectors) {
       const r = await chrome.debugger.sendCommand({ tabId }, "DOM.querySelector", {
-        nodeId: doc.root.nodeId,
-        selector: sel,
+        nodeId: doc.root.nodeId, selector: sel,
       });
       if (r?.nodeId) {
         inputNodeId = r.nodeId;
-        console.log("[Z2U-CDP] File input found with selector:", sel, "nodeId:", inputNodeId);
+        console.log("[Z2U-CDP] File input found:", sel, "nodeId:", inputNodeId);
         break;
       }
     }
     if (!inputNodeId) throw new Error("File input not found via CDP DOM query");
-
-    // ── 5. Set the file — creates a trusted FileList at the browser level ─────
     await chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", {
       nodeId: inputNodeId,
-      files: [downloadedPath],
+      files: [filePath],
     });
-    console.log("[Z2U-CDP] ✅ DOM.setFileInputFiles completed. React will receive isTrusted=true change event.");
-    return { ok: true, filePath: downloadedPath };
+    console.log("[Z2U-CDP] ✅ DOM.setFileInputFiles complete — isTrusted FileList set.");
+    return { ok: true };
   } finally {
-    // Always detach if we were the ones who attached
     if (!alreadyAttached) {
       chrome.debugger.detach({ tabId }).catch(() => {});
       console.log("[Z2U-CDP] Debugger detached.");
