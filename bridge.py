@@ -299,20 +299,22 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
             # so Z2U's internal validator treats this as a real user file pick.
             print("[bridge] Intercepting file chooser via physical click…")
             with page.expect_file_chooser() as fc_info:
+                # Target the AntD upload wrapper directly; force=True bypasses
+                # visibility checks on the hidden/overlapping element.
                 page.click(
-                    "button:has-text('Select File'), "
-                    ".ant-upload-drag-container"
+                    ".ant-upload-select, .ant-upload-drag, [type='file']",
+                    force=True,
                 )
 
             file_chooser = fc_info.value
             file_chooser.set_files(tmp_path)
-            print(f"[bridge] ✅ File physically attached via file chooser: {tmp_path}")
+            print(f"[bridge] ✅ File physically attached to: {tmp_path}")
 
-            # ── Step 6: Wait for React, then click the enabled primary btn ──
+            # ── Step 6: Wait for React, then click primary btn ─────────────
             print("[bridge] Waiting 2 s for Z2U to process the file…")
-            page.wait_for_timeout(2000)
+            time.sleep(2)
 
-            page.click("button.ant-btn-primary:not([disabled])")
+            page.click("button.ant-btn-primary")
             print("[bridge] ✅ Clicked Submit. Waiting for modal to close…")
 
             # ── Step 6: Wait for modal to close ───────────────────────────
