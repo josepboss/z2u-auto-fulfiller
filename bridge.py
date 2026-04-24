@@ -108,34 +108,41 @@ def _find_upload_btn(page):
     return None, None
 
 
-def find_z2u_page(browser, order_id: str, page_url: str):
+def _all_tab_urls(browser) -> list:
+    """Return a list of all open tab URLs for debugging."""
+    try:
+        return [p.url for ctx in browser.contexts for p in ctx.pages]
+    except Exception:
+        return []
+
+
+def _get_or_open_z2u_tab(browser, page_url: str):
     """
-    Return the Playwright Page for the open Z2U order-detail page.
-    Priority:
-      1. Exact URL match
-      2. URL contains the orderId
-      3. URL contains z2u.com/sellOrder (any detail page)
-      4. URL contains z2u.com (fallback)
+    Use contexts[0] (the permanent Chrome profile — the one with cookies/login).
+    Look for an existing Z2U tab in that context.  If none exists, open a new
+    page in the same context and navigate to page_url so the session is reused.
+    Returns (context, page).
     """
-    all_pages = [p for ctx in browser.contexts for p in ctx.pages]
+    # contexts[0] is the user's permanent profile (has Z2U login cookies)
+    ctx = browser.contexts[0] if browser.contexts else None
+    if ctx is None:
+        return None, None
 
-    for page in all_pages:
-        if page_url and page.url == page_url:
-            return page
+    # Prefer a tab already on the Z2U order detail page
+    for p in ctx.pages:
+        if page_url and page_url in p.url:
+            return ctx, p
+    for p in ctx.pages:
+        if "z2u.com/sellOrder" in p.url and "/index" not in p.url:
+            return ctx, p
+    for p in ctx.pages:
+        if "z2u.com" in p.url:
+            return ctx, p
 
-    for page in all_pages:
-        if order_id and order_id in page.url:
-            return page
-
-    for page in all_pages:
-        if "z2u.com/sellOrder" in page.url and "/index" not in page.url:
-            return page
-
-    for page in all_pages:
-        if "z2u.com" in page.url:
-            return page
-
-    return None
+    # No Z2U tab open — create one in the SAME context (shares cookies)
+    print("[bridge] No Z2U tab found — opening one in the existing Chrome profile…")
+    page = ctx.new_page()
+    return ctx, page
 
 
 def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
@@ -168,27 +175,21 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
                 ),
             }
 
-        # ── Pick any Z2U tab (we will navigate it to the right URL) ──────
-        all_pages = [p for ctx in browser.contexts for p in ctx.pages]
-        page = None
+        # ── List all tabs for diagnostics ─────────────────────────────────
+        all_urls = _all_tab_urls(browser)
+        print(f"[bridge] CDP Chrome has {len(all_urls)} tab(s): {all_urls}")
 
-        # Prefer a tab already on a z2u.com/sellOrder detail page
-        for p in all_pages:
-            if "z2u.com/sellOrder" in p.url and "/index" not in p.url:
-                page = p
-                break
-        # Any z2u.com tab
+        # ── Get (or create) the right Z2U tab using contexts[0] ──────────
+        _ctx, page = _get_or_open_z2u_tab(browser, page_url)
         if not page:
-            for p in all_pages:
-                if "z2u.com" in p.url:
-                    page = p
-                    break
-        # Last resort: first open tab
-        if not page and all_pages:
-            page = all_pages[0]
-
-        if not page:
-            return {"ok": False, "error": "No browser tabs found. Is Chrome running?"}
+            return {
+                "ok": False,
+                "error": (
+                    f"No browser context found in CDP Chrome. "
+                    f"Open Chrome with --remote-debugging-port=9222. "
+                    f"Tabs seen: {all_urls}"
+                ),
+            }
 
         print(f"[bridge] Selected tab: {page.url}")
         print(f"[bridge] Navigating to: {page_url}")
@@ -358,6 +359,48 @@ def cors(resp):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     resp.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
     return resp
+
+
+@app.route("/debug/tabs", methods=["GET"])
+def debug_tabs():
+    """
+    Visit http://localhost:5000/debug/tabs to see every tab the bridge can see
+    in the CDP Chrome.  If your Z2U order page is not listed here, the bridge
+    is connected to a different Chrome instance than your extension.
+    """
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(CDP_URL)
+            tabs = []
+            for i, ctx in enumerate(browser.contexts):
+                for j, p in enumerate(ctx.pages):
+                    tabs.append({
+                        "context": i,
+                        "tab": j,
+                        "url": p.url,
+                        "title": p.title() if p.url else "",
+                    })
+        return jsonify({
+            "ok": True,
+            "cdp_url": CDP_URL,
+            "tab_count": len(tabs),
+            "tabs": tabs,
+            "hint": (
+                "If your Z2U order page is NOT in this list, the bridge is watching "
+                "a different Chrome. Make sure the Chrome that has Z2U open was "
+                "started with --remote-debugging-port=9222."
+            ),
+        })
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "hint": (
+                "Could not connect to Chrome at http://localhost:9222. "
+                "Start Chrome with: --remote-debugging-port=9222 "
+                "--user-data-dir=/tmp/chrome-cdp"
+            ),
+        }), 500
 
 
 @app.route("/upload", methods=["OPTIONS"])
