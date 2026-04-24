@@ -616,6 +616,12 @@
         const bridgeJson = await bridgeResp.json().catch(() => ({}));
         if (bridgeJson.ok) {
           log("UPLOAD", `[C_LOCAL] ✅ Bridge upload succeeded: ${bridgeJson.message || "ok"}`);
+          // Mark processed IMMEDIATELY so that any SPA reinit (Z2U closing the
+          // modal causes a client-side route change that re-runs content.js)
+          // does NOT trigger a second download+upload cycle.
+          sessionDone.add(_orderId);
+          await bgMarkProcessed(_orderId);
+          log("UPLOAD", `[C_LOCAL] 🔒 Order ${_orderId} locked as processed — no re-upload possible.`);
           await sleep(1500);
           return await confirmDeliveredFlow(quantity);
         }
