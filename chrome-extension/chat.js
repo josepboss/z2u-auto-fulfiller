@@ -257,23 +257,47 @@
       '[class*="sideBar"], [class*="sidebar"], [class*="chatList"], ' +
       '[class*="chat-list"], [class*="userList"], aside, nav';
 
-    // Collect ALL visible textarea and contenteditable elements outside the sidebar
+    // Returns true if this element looks like a SEARCH field (not a message input)
+    function isSearchField(el) {
+      if (el.type === "search") return true;
+      const ph = (el.placeholder || el.getAttribute("placeholder") || "").toLowerCase();
+      if (/search|find|filter|look|buscar|suche|chercher/i.test(ph)) return true;
+      // If the element (or an ancestor within 5 levels) has a search-related class
+      let node = el;
+      for (let i = 0; i < 5; i++) {
+        if (!node) break;
+        if (/search|filter|find/i.test(node.className || "")) return true;
+        node = node.parentElement;
+      }
+      return false;
+    }
+
+    // Collect ALL visible inputs that are NOT search fields
     const candidates = [];
     for (const el of document.querySelectorAll('textarea, div[contenteditable="true"], input[type="text"]')) {
-      if (!el.offsetParent) continue;                   // invisible
-      if (el.closest(SIDEBAR_SEL)) continue;            // inside sidebar
+      if (!el.offsetParent) continue;          // invisible
+      if (el.closest(SIDEBAR_SEL)) continue;  // known sidebar selectors
+      if (isSearchField(el)) continue;         // looks like a search box → skip
       candidates.push(el);
     }
 
     if (!candidates.length) return null;
 
-    // Prefer the one whose nearest ancestor contains "send"-like context, else last visible
-    const preferred = candidates.find(el => {
-      const ancestor = el.closest('[class*="input"], [class*="compose"], [class*="editor"], [class*="msg"], [class*="chat"], [class*="bottom"], [class*="footer"], [class*="reply"]');
-      return !!ancestor;
+    // Priority 1: element whose placeholder explicitly says "message"
+    const byPlaceholder = candidates.find(el => {
+      const ph = (el.placeholder || el.getAttribute("placeholder") || "").toLowerCase();
+      return /message|type|write|send|reply|chat/i.test(ph);
     });
+    if (byPlaceholder) return byPlaceholder;
 
-    return preferred || candidates[candidates.length - 1];
+    // Priority 2: element inside a message-panel ancestor class
+    const byAncestor = candidates.find(el =>
+      el.closest('[class*="input"], [class*="compose"], [class*="editor"], [class*="msg"], [class*="bottom"], [class*="footer"], [class*="reply"]')
+    );
+    if (byAncestor) return byAncestor;
+
+    // Fallback: last visible candidate (message inputs are at the bottom of the page)
+    return candidates[candidates.length - 1];
   }
 
   // ── Inject text into any React-controlled input ─────────────────────────────
@@ -475,14 +499,17 @@
       const all = Array.from(document.querySelectorAll('textarea, div[contenteditable="true"], input[type="text"]'));
       LOG(`All inputs on page (${all.length} total):`);
       all.forEach((el, i) => {
-        const vis = !!el.offsetParent;
+        const vis    = !!el.offsetParent;
         const inSide = !!el.closest('[class*="sideBar"],[class*="sidebar"],[class*="chatList"],aside,nav');
-        LOG(`  [${i}] <${el.tagName} ce="${el.getAttribute("contenteditable")}" vis=${vis} inSidebar=${inSide}>`);
-        LOG(`       class="${el.className.slice(0,100)}"`);
+        const ph     = el.placeholder || el.getAttribute("placeholder") || "";
+        LOG(`  [${i}] <${el.tagName} type="${el.type}" ce="${el.getAttribute("contenteditable")}" vis=${vis} inSidebar=${inSide}>`);
+        LOG(`       placeholder="${ph}" class="${el.className.slice(0,100)}"`);
         LOG(`       value="${(el.value || el.textContent || "").slice(0,40)}"`);
       });
       const picked = findChatInput();
-      LOG(`findChatInput() picked:`, picked ? `<${picked.tagName} class="${picked.className.slice(0,80)}">` : "null");
+      LOG(`findChatInput() → `, picked
+        ? `<${picked.tagName} placeholder="${picked.placeholder || picked.getAttribute("placeholder") || ""}" class="${picked.className.slice(0,80)}">`
+        : "null — no input found");
     },
     // Test sending a reply to a specific username from DevTools
     // Usage: _z2uChatDebug.testReply("buyerUsername", "hello!")
