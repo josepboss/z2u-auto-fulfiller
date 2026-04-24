@@ -290,14 +290,40 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
                     ),
                 }
 
-            # ── Step 5: Intercept file chooser on "Select File" click ─────
-            print("[bridge] Intercepting file chooser on 'Select File' click…")
-            with page.expect_file_chooser(timeout=10000) as fc_info:
-                sel_btn.click()
+            # ── Step 5: Set file directly on the hidden <input type="file"> ─
+            # Ant Design's Upload component hides the real file input and shows
+            # a custom "Select File" button. Playwright's expect_file_chooser()
+            # only works for native OS file pickers — it does NOT fire for AntD
+            # because the hidden input is triggered internally.
+            # Solution: find the hidden input in the modal and call
+            # set_input_files(force=True) which bypasses visibility restrictions.
+            print("[bridge] Setting file on hidden <input type='file'>…")
+            file_input = None
 
-            file_chooser = fc_info.value
-            file_chooser.set_files(tmp_path)
-            print(f"[bridge] ✅ File chooser resolved — attached: {tmp_path}")
+            # Scope search to the modal first, then fall back to page-wide
+            for scope_sel in [MODAL_SEL, "body"]:
+                try:
+                    inp = page.locator(f"{scope_sel} input[type='file']").first
+                    inp.wait_for(state="attached", timeout=4000)
+                    file_input = inp
+                    print(f"[bridge] Found file input inside: {scope_sel}")
+                    break
+                except PWTimeout:
+                    continue
+                except Exception:
+                    continue
+
+            if not file_input:
+                return {
+                    "ok": False,
+                    "error": (
+                        "Could not find <input type='file'> inside the upload modal. "
+                        "Z2U may have changed their upload widget."
+                    ),
+                }
+
+            file_input.set_input_files(tmp_path)
+            print(f"[bridge] ✅ File attached: {tmp_path}")
             time.sleep(1.5)  # React state update after file selection
 
             # ── Step 6: Click Submit ───────────────────────────────────────
