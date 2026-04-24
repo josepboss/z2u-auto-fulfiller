@@ -45,6 +45,8 @@ import os
 import tempfile
 import time
 import traceback
+import urllib.request
+import json as _json
 
 from flask import Flask, jsonify, request
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -165,7 +167,7 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
     with sync_playwright() as pw:
         # ── Connect to Chrome ─────────────────────────────────────────────
         try:
-            browser = pw.chromium.connect_over_cdp(CDP_URL)
+            browser = pw.chromium.connect_over_cdp(CDP_URL, timeout=6000)
         except Exception as e:
             return {
                 "ok": False,
@@ -364,43 +366,51 @@ def cors(resp):
 @app.route("/debug/tabs", methods=["GET"])
 def debug_tabs():
     """
-    Visit http://localhost:5000/debug/tabs to see every tab the bridge can see
-    in the CDP Chrome.  If your Z2U order page is not listed here, the bridge
-    is connected to a different Chrome instance than your extension.
+    Visit http://localhost:5000/debug/tabs to instantly see every tab open in
+    the CDP Chrome.  Uses Chrome's built-in /json/list endpoint — no Playwright
+    needed, responds in milliseconds.
+
+    If your Z2U order page is NOT in the list, the bridge is watching a
+    different Chrome instance than the one your extension is running in.
     """
+    json_url = f"{CDP_URL}/json/list"
     try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.connect_over_cdp(CDP_URL)
-            tabs = []
-            for i, ctx in enumerate(browser.contexts):
-                for j, p in enumerate(ctx.pages):
-                    tabs.append({
-                        "context": i,
-                        "tab": j,
-                        "url": p.url,
-                        "title": p.title() if p.url else "",
-                    })
+        with urllib.request.urlopen(json_url, timeout=4) as resp:
+            raw = _json.loads(resp.read())
+        tabs = [
+            {"url": t.get("url", ""), "title": t.get("title", ""), "type": t.get("type", "")}
+            for t in raw
+            if t.get("type") in ("page", "")
+        ]
+        z2u_tabs = [t for t in tabs if "z2u.com" in t["url"]]
         return jsonify({
             "ok": True,
             "cdp_url": CDP_URL,
-            "tab_count": len(tabs),
-            "tabs": tabs,
-            "hint": (
-                "If your Z2U order page is NOT in this list, the bridge is watching "
-                "a different Chrome. Make sure the Chrome that has Z2U open was "
-                "started with --remote-debugging-port=9222."
+            "total_tabs": len(tabs),
+            "z2u_tabs": z2u_tabs,
+            "all_tabs": tabs,
+            "diagnosis": (
+                "GOOD — bridge sees your Z2U tab." if z2u_tabs
+                else (
+                    "PROBLEM — no Z2U tab visible to the bridge. "
+                    "The Chrome with --remote-debugging-port=9222 is NOT the same "
+                    "Chrome where Z2U is open. Open Z2U in the CDP Chrome window, "
+                    "or restart Chrome with --remote-debugging-port=9222 and log in to Z2U there."
+                )
             ),
         })
-    except Exception as e:
+    except OSError as e:
         return jsonify({
             "ok": False,
-            "error": str(e),
-            "hint": (
-                "Could not connect to Chrome at http://localhost:9222. "
-                "Start Chrome with: --remote-debugging-port=9222 "
-                "--user-data-dir=/tmp/chrome-cdp"
+            "error": f"Cannot reach {json_url}: {e}",
+            "diagnosis": (
+                "Chrome is NOT running with --remote-debugging-port=9222, "
+                "OR it is running on a different port. "
+                "Start Chrome with: --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-cdp"
             ),
         }), 500
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/upload", methods=["OPTIONS"])
@@ -474,7 +484,7 @@ def do_chat_reply(username: str, message: str) -> dict:
     """
     with sync_playwright() as pw:
         try:
-            browser = pw.chromium.connect_over_cdp(CDP_URL)
+            browser = pw.chromium.connect_over_cdp(CDP_URL, timeout=6000)
         except Exception as e:
             return {
                 "ok": False,
@@ -664,24 +674,38 @@ def health():
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _startup_chrome_check():
+    """
+    At startup, hit Chrome's /json/list endpoint and print a summary of open
+    tabs.  This immediately tells the user whether the bridge can see Chrome
+    and whether any Z2U tabs are open — without any Playwright overhead.
+    """
+    try:
+        with urllib.request.urlopen(f"{CDP_URL}/json/list", timeout=3) as r:
+            tabs = _json.loads(r.read())
+        pages = [t for t in tabs if t.get("type") == "page"]
+        z2u   = [t for t in pages if "z2u.com" in t.get("url", "")]
+        print(f"[bridge] ✅ Chrome detected at {CDP_URL}  —  {len(pages)} tab(s), {len(z2u)} Z2U tab(s)")
+        for t in pages:
+            marker = "  ← Z2U ✅" if "z2u.com" in t.get("url", "") else ""
+            print(f"[bridge]   {t.get('url', '?')[:90]}{marker}")
+        if not z2u:
+            print("[bridge] ⚠  No Z2U tab found. Open z2u.com/sellOrder in this Chrome window.")
+    except OSError:
+        print(f"[bridge] ⚠  Chrome NOT detected at {CDP_URL}.")
+        print("[bridge]    Start Chrome with:")
+        print("[bridge]      macOS  : /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\")
+        print("[bridge]                 --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-cdp")
+        print("[bridge]      Windows: chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\\chrome-cdp")
+        print("[bridge]    Then log in to Z2U in that Chrome window.")
+
+
 if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════════════════╗
 ║         Z2U Local Playwright Bridge  —  listening on :5000          ║
 ╚══════════════════════════════════════════════════════════════════════╝
-
-Before sending any orders, make sure Chrome is running with:
-  --remote-debugging-port=9222
-
-  Windows : "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-              --remote-debugging-port=9222 --user-data-dir=C:\\chrome-cdp
-  macOS   : /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome
-              --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-cdp
-  Linux   : google-chrome --remote-debugging-port=9222
-              --user-data-dir=/tmp/chrome-cdp
-
-Log in to Z2U in that Chrome window and leave it open.
-
-Waiting for the extension…
 """)
+    _startup_chrome_check()
+    print()
     app.run(host="127.0.0.1", port=BRIDGE_PORT, debug=False, threaded=True)
