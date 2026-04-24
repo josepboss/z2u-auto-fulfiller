@@ -911,18 +911,22 @@
         log("DETAIL", `[3] Available keys: ${JSON.stringify(keys)}`);
         await chrome.storage.local.remove(["pendingOrderId", "pendingTitle"]);
 
-        // Unmapped NEW ORDER on the detail page — click Preparing and return to list.
-        if (hasNew) {
+        // Only auto-click Preparing + redirect if the list-page automation
+        // triggered this navigation (prepareOnly flag set).
+        // If the user manually opened the order, leave the page completely alone.
+        if (prepareOnly && hasNew) {
           const prepBtn = Array.from(document.querySelectorAll("button, a"))
             .find((b) => b.textContent?.trim().toUpperCase() === "PREPARING");
           if (prepBtn) {
-            log("DETAIL", `[3] Unmapped NEW ORDER — clicking Preparing.`);
+            log("DETAIL", `[3] Unmapped NEW ORDER (automation) — clicking Preparing.`);
             prepBtn.click();
           } else {
             warn("DETAIL", `[3] Unmapped — Preparing button not found.`);
           }
           chrome.runtime.sendMessage({ type: "MARK_PROCESSED", orderId }).catch(() => {});
           window.location.href = "https://www.z2u.com/sellOrder/index";
+        } else {
+          log("DETAIL", `[3] Unmapped order — user navigated manually. Leaving page alone.`);
         }
         return;
       }
