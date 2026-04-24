@@ -622,11 +622,17 @@
           e.stopPropagation();
           injectCount++;
 
-          // Re-inject our file on every intercepted click
+          // Inject file bytes into the native files property
           injectIntoInput(modalFileInput, file);
           log("UPLOAD", `[C2] Click #${injectCount} intercepted — files.length=${modalFileInput.files?.length} name="${modalFileInput.files?.[0]?.name}"`);
 
-          // Dispatch change so Z2U's component processes the file
+          // CRITICAL: also call React's own onChange directly — native change events
+          // with isTrusted=false can be silently dropped by React's event system,
+          // leaving the visual display updated but React component state empty
+          // (which is what causes Z2U's "Please input note" rejection at SUBMIT).
+          injectFileAndUpdateReact(modalFileInput, file);
+
+          // Dispatch native change as well (belt-and-suspenders)
           modalFileInput.dispatchEvent(new Event("change", { bubbles: true }));
 
           // After 2 injections the component reaches its "file accepted" state
@@ -655,16 +661,20 @@
         // Safety: if Z2U only opens the picker once (one click total), still proceed
         setTimeout(() => {
           if (injectCount === 0) {
-            // Nothing fired — fall back to direct injection + change event
+            // Nothing fired — fall back to direct injection + React update
             log("UPLOAD", `[C2] No click intercepted — falling back to direct injection`);
             injectIntoInput(modalFileInput, file);
+            injectFileAndUpdateReact(modalFileInput, file);
             modalFileInput.dispatchEvent(new Event("change", { bubbles: true }));
           }
           safeResolve();
         }, 5000);
       });
 
+      // Final safety pass: re-fire React onChange after all clicks have settled.
+      // Even if the handler above already called it, calling again is harmless.
       await sleep(600);
+      await injectFileAndUpdateReact(modalFileInput, file);
       log("UPLOAD", `[C2] Done. files.length=${modalFileInput.files?.length ?? 0}`);
     } else {
       warn("UPLOAD", `[C2] Could not find any file input — SUBMIT will likely fail`);
@@ -708,7 +718,8 @@
           log("UPLOAD", `[C2.5] Filled note field tag=${ti.tagName} id="${ti.id}" name="${ti.name}"`);
         }
       }
-      await sleep(300);
+      // Wait for React to commit all state changes before clicking SUBMIT
+      await sleep(800);
     }
 
     // ── Step C3: Click SUBMIT to upload the file first ────────────────────────
