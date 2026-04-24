@@ -448,7 +448,122 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+
+  // ── CDP-based file injection ───────────────────────────────────────────────
+  // Downloads the filled XLSX to disk then uses DOM.setFileInputFiles (CDP) to
+  // attach it to Z2U's upload modal file input.  This creates a genuinely
+  // trusted FileList at the browser-engine level — identical to the user
+  // picking the file through the OS file picker — so React's onChange fires
+  // with isTrusted=true and the component state is properly updated.
+  if (message.type === "CDP_SET_FILE") {
+    const { fileBytes, filename } = message;
+    const tabId = sender.tab?.id;
+    if (!tabId) { sendResponse({ ok: false, error: "No tab ID" }); return true; }
+    cdpSetFileOnInput(tabId, fileBytes, filename)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
 });
+
+// ── CDP-based file injection helper ──────────────────────────────────────────
+// Uses chrome.downloads to save the XLSX to disk, then DOM.setFileInputFiles
+// (Chrome DevTools Protocol) to attach it to the upload modal's file input.
+// The result is a real, isTrusted FileList — React handles it exactly as if
+// the user selected the file through the OS native file picker.
+async function cdpSetFileOnInput(tabId, fileBytes, filename) {
+  // ── 1. Convert bytes to base64 data URL (safe in MV3 service workers) ──────
+  const bytes = new Uint8Array(fileBytes);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const base64 = btoa(binary);
+  const dataUrl = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${base64}`;
+
+  // ── 2. Download to the user's Downloads folder ────────────────────────────
+  const dlFilename = filename || "Z2U_delivery_temp.xlsx";
+  const downloadedPath = await new Promise((resolve, reject) => {
+    chrome.downloads.download(
+      { url: dataUrl, filename: dlFilename, conflictAction: "overwrite", saveAs: false },
+      (downloadId) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        const timeout = setTimeout(() => {
+          chrome.downloads.onChanged.removeListener(onChange);
+          reject(new Error("Download timed out after 15s"));
+        }, 15000);
+
+        function onChange(delta) {
+          if (delta.id !== downloadId) return;
+          if (delta.state?.current === "complete") {
+            chrome.downloads.onChanged.removeListener(onChange);
+            clearTimeout(timeout);
+            chrome.downloads.search({ id: downloadId }, (results) => {
+              const p = results?.[0]?.filename;
+              p ? resolve(p) : reject(new Error("Downloaded path not found"));
+            });
+          } else if (delta.state?.current === "interrupted") {
+            chrome.downloads.onChanged.removeListener(onChange);
+            clearTimeout(timeout);
+            reject(new Error(`Download interrupted: ${delta.error?.current || "unknown"}`));
+          }
+        }
+        chrome.downloads.onChanged.addListener(onChange);
+      }
+    );
+  });
+
+  console.log("[Z2U-CDP] File saved to disk:", downloadedPath);
+
+  // ── 3. Attach debugger (skip if already attached for capture mode) ─────────
+  const alreadyAttached = captureTabIds.has(tabId);
+  if (!alreadyAttached) {
+    await chrome.debugger.attach({ tabId }, "1.3");
+    console.log("[Z2U-CDP] Debugger attached to tab", tabId);
+  } else {
+    console.log("[Z2U-CDP] Reusing existing debugger session on tab", tabId);
+  }
+
+  try {
+    // ── 4. Find file input via CDP DOM query ──────────────────────────────────
+    const doc = await chrome.debugger.sendCommand({ tabId }, "DOM.getDocument", { depth: 1 });
+    const selectors = [
+      ".ant-modal input[type='file']",
+      "[role='dialog'] input[type='file']",
+      "[class*='modal'] input[type='file']",
+      "[class*='dialog'] input[type='file']",
+      "input[type='file']",
+    ];
+    let inputNodeId = 0;
+    for (const sel of selectors) {
+      const r = await chrome.debugger.sendCommand({ tabId }, "DOM.querySelector", {
+        nodeId: doc.root.nodeId,
+        selector: sel,
+      });
+      if (r?.nodeId) {
+        inputNodeId = r.nodeId;
+        console.log("[Z2U-CDP] File input found with selector:", sel, "nodeId:", inputNodeId);
+        break;
+      }
+    }
+    if (!inputNodeId) throw new Error("File input not found via CDP DOM query");
+
+    // ── 5. Set the file — creates a trusted FileList at the browser level ─────
+    await chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", {
+      nodeId: inputNodeId,
+      files: [downloadedPath],
+    });
+    console.log("[Z2U-CDP] ✅ DOM.setFileInputFiles completed. React will receive isTrusted=true change event.");
+    return { ok: true, filePath: downloadedPath };
+  } finally {
+    // Always detach if we were the ones who attached
+    if (!alreadyAttached) {
+      chrome.debugger.detach({ tabId }).catch(() => {});
+      console.log("[Z2U-CDP] Debugger detached.");
+    }
+  }
+}
 
 async function fetchMappings() {
   const { serverUrl } = await chrome.storage.local.get("serverUrl");
