@@ -264,35 +264,34 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
 
             MODAL_SEL = ".ant-modal-content"
 
-            # 1. Wait a moment for the popup to physically appear
-            time.sleep(2)
-
-            # 2. Trigger the "Real" file selection window
+            # 1. Wait for the file input to exist in the DOM
             try:
-                with page.expect_file_chooser() as fc_info:
-                    page.click("button:has-text('Select File'), .ant-btn-primary", force=True)
+                print("[bridge] Locating the file input (#upfile)...")
+                page.wait_for_selector("#upfile", state="attached", timeout=5000)
 
+                # 2. Attach the file directly to the input using its ID
+                page.set_input_files("#upfile", tmp_path)
+                print(f"[bridge] ✅ File attached to #upfile: {tmp_path}")
+
+            except Exception as e:
+                print(f"[bridge] ❌ Could not find #upfile, trying fallback click...")
+                with page.expect_file_chooser() as fc_info:
+                    page.click("button:has-text('Select File')", force=True)
                 file_chooser = fc_info.value
                 file_chooser.set_files(tmp_path)
-                print(f"[bridge] ✅ File attached: {tmp_path}")
-            except Exception as e:
-                print(f"[bridge] ❌ Failed to click Select File: {e}")
-                return {"ok": False, "error": str(e)}
 
-            # 3. CRITICAL PAUSE: Give Z2U time to validate the extension
-            print("[bridge] Waiting for Z2U validation...")
+            # 3. CRITICAL: The "Z2U Wait"
+            print("[bridge] Waiting 5s for Z2U extension validation...")
             time.sleep(5)
 
-            # 4. The Golden Click using the ID you found
-            submit_id = "#sellFormSubmit"
+            # 4. The Final Submit
+            print("[bridge] Clicking #sellFormSubmit...")
             try:
-                print(f"[bridge] Clicking {submit_id}...")
-                page.wait_for_selector(submit_id, state="visible", timeout=10000)
-                page.click(submit_id)
+                page.click("#sellFormSubmit", force=True)
                 print("[bridge] ✅ SUBMIT clicked!")
                 return {"ok": True}
             except Exception as e:
-                print(f"[bridge] ❌ Failed to click Submit: {e}")
+                print(f"[bridge] ❌ Final Submit failed: {e}")
                 return {"ok": False, "error": str(e)}
 
         except Exception:
