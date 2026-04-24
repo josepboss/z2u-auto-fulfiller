@@ -797,6 +797,20 @@
       return;
     }
 
+    // Normalise: collapse whitespace, trim, remove zero-width/invisible chars.
+    // Used for fuzzy title matching on both list and detail pages.
+    function normaliseTitle(s) {
+      return (s || "")
+        .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "") // zero-width / soft-hyphen
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+    function findMapping(title) {
+      if (mappings[title]) return title; // exact match
+      const norm = normaliseTitle(title);
+      return mappingKeys.find((k) => normaliseTitle(k) === norm) || null;
+    }
+
     const panels = document.querySelectorAll(".orderPanel");
     log("LIST", `Found ${panels.length} .orderPanel(s).`);
 
@@ -821,15 +835,24 @@
       const orderIdFromLink      = panel.querySelector(".o-number a")?.textContent?.trim();
       const orderId              = orderIdFromClipboard || orderIdFromLink;
 
-      // Title
-      const titleEl = panel.querySelector(".o-l-col.productInfo a");
-      const title   = titleEl?.textContent?.trim() || "";
+      // Title — try multiple selectors in priority order
+      const titleEl = (
+        panel.querySelector(".o-l-col.productInfo a") ||
+        panel.querySelector(".productInfo a") ||
+        panel.querySelector('[class*="productInfo"] a') ||
+        panel.querySelector('[class*="goodsName"]') ||
+        panel.querySelector('[class*="offerTitle"]') ||
+        panel.querySelector('[class*="productTitle"]')
+      );
+      const title = titleEl?.textContent?.trim() || "";
+      if (!title) warn("LIST", `Could not extract title for panel — orderId="${panel.querySelector("[data-clipboard-text]")?.getAttribute("data-clipboard-text")?.trim()}". HTML snippet: ${panel.innerHTML.slice(0, 300)}`);
 
       // Detail link
       const detailLink = panel.querySelector('.o-l-col.productStatus a[href*="sellOrder"]');
       const detailHref = detailLink?.getAttribute("href") || "";
 
-      log("LIST", `🔍 NEW ORDER → orderId="${orderId}" | title="${title}" | href="${detailHref}"`);
+      const resolvedListTitle = findMapping(title);
+      log("LIST", `🔍 NEW ORDER → orderId="${orderId}" | title="${title}" | resolvedTitle="${resolvedListTitle}" | href="${detailHref}"`);
 
       if (!orderId) {
         warn("LIST", "Could not extract orderId — skipping.");
@@ -837,7 +860,7 @@
       }
 
       // ── Unmapped NEW ORDER: click Prepare and return ─────────────────────
-      if (!mappings[title]) {
+      if (!resolvedListTitle) {
         // Only act on NEW ORDER status for unmapped offers (PREPARING/DELIVERING leave them alone)
         if (!statusText.includes("NEW ORDER")) {
           log("LIST", `Unmapped order ${orderId} in state "${statusText}" — ignoring.`);
@@ -848,8 +871,8 @@
           log("LIST", `Unmapped order ${orderId} already prepared this session.`);
           continue;
         }
-        const alreadyDone = await bgIsProcessed(orderId);
-        if (alreadyDone) {
+        const alreadyDoneUnmapped = await bgIsProcessed(orderId);
+        if (alreadyDoneUnmapped) {
           log("LIST", `Unmapped order ${orderId} already processed.`);
           continue;
         }
@@ -867,6 +890,9 @@
       }
 
       // ── Mapped order: full fulfillment flow ───────────────────────────────
+      if (resolvedListTitle !== title) {
+        warn("LIST", `Fuzzy title match: extracted="${title}" → mapping key="${resolvedListTitle}"`);
+      }
       if (sessionDone.has(orderId)) {
         log("LIST", `Order ${orderId} already in progress this session.`);
         continue;
@@ -882,7 +908,8 @@
         continue;
       }
 
-      await chrome.storage.local.set({ pendingOrderId: orderId, pendingTitle: title });
+      // Store the resolved (mapping-key) title so the detail page finds it immediately
+      await chrome.storage.local.set({ pendingOrderId: orderId, pendingTitle: resolvedListTitle });
       log("LIST", `🔗 Navigating to detail page: ${detailHref}`);
       window.location.href = detailHref;
       return;
