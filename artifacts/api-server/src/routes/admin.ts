@@ -255,6 +255,36 @@ router.get("/admin/cached-orders/:orderId/download", (req, res) => {
   res.send(fs.readFileSync(filePath));
 });
 
+// ── Pending chat-reply queue ──────────────────────────────────────────────────
+// The extension polls GET /api/admin/pending-chat-replies every 5 s.
+// The admin (or any Telegram-triggered webhook) pushes replies here.
+// This gives a VPS-side queue so replies survive bridge.py restarts.
+interface PendingReply {
+  username: string;
+  message:  string;
+  orderId:  string;
+  queuedAt: string;
+}
+const pendingChatReplies: PendingReply[] = [];
+
+router.post("/admin/queue-chat-reply", (req, res) => {
+  const { username, message, orderId = "" } = req.body as {
+    username: string; message: string; orderId?: string;
+  };
+  if (!username || !message) {
+    res.status(400).json({ error: "username and message are required" });
+    return;
+  }
+  pendingChatReplies.push({ username, message, orderId, queuedAt: new Date().toISOString() });
+  console.log(`[chat-queue] Queued reply for "${username}": "${message.slice(0, 60)}"`);
+  res.json({ ok: true, queued: pendingChatReplies.length });
+});
+
+router.get("/admin/pending-chat-replies", (_req, res) => {
+  const replies = pendingChatReplies.splice(0); // drain and return
+  res.json(replies);
+});
+
 // ── VPS proxy upload ──────────────────────────────────────────────────────────
 // The extension cannot use CDP (Z2U detects the debugger banner) and Z2U's
 // browser-side checks block extension uploads. This endpoint runs on the VPS

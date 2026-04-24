@@ -148,7 +148,7 @@
           const username = map[String(replyToId)];
           if (username) {
             LOG(`← Telegram reply for "${username}": "${msg.text}"`);
-            await sendReplyToUser(username, msg.text);
+            await replyToUser(username, msg.text);
           }
         } else {
           // ── Free-form message (not a reply) → treat as a refresh request ──
@@ -407,6 +407,72 @@
     return visible[visible.length - 1] || null;
   }
 
+  // ── Route a reply through the local Playwright bridge ─────────────────────
+  // bridge.py keyboard.type() generates isTrusted=true events (real hardware
+  // path via CDP), so Z2U cannot distinguish them from a real user typing.
+  async function sendReplyViaBridge(username, text) {
+    try {
+      const resp = await fetch("http://localhost:5000/chat-reply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, message: text }),
+      });
+      if (!resp.ok) {
+        WARN(`[bridge] HTTP ${resp.status} — falling back to direct injection`);
+        return false;
+      }
+      const json = await resp.json().catch(() => ({}));
+      if (json.ok) {
+        LOG(`[bridge] ✅ Reply sent via Playwright bridge: "${text.slice(0, 60)}"`);
+        return true;
+      }
+      WARN(`[bridge] Bridge rejected reply: ${json.error || "unknown"}`);
+      return false;
+    } catch (e) {
+      WARN(`[bridge] Unreachable (is bridge.py running?): ${e.message}`);
+      return false;
+    }
+  }
+
+  // Try bridge first; fall back to direct JS injection if bridge is down.
+  async function replyToUser(username, text) {
+    const viaBridge = await sendReplyViaBridge(username, text);
+    if (!viaBridge) {
+      LOG(`[bridge] Falling back to direct JS injection for "${username}"`);
+      await sendReplyToUser(username, text);
+    }
+  }
+
+  // ── Poll VPS for pending chat replies every 5 s ────────────────────────────
+  // The admin dashboard (or any other tool) can push replies via
+  // POST /api/admin/queue-chat-reply. The extension drains the queue here
+  // and routes each one through the local Playwright bridge.
+  async function pollVpsChatReplies() {
+    if (!isContextValid()) return;
+    try {
+      const { serverUrl } = await new Promise(r => {
+        try { chrome.storage.local.get(["serverUrl"], r); }
+        catch (e) { shutdown(e.message); r({}); }
+      });
+      if (!serverUrl) return;
+
+      const resp = await fetch(`${serverUrl}/api/admin/pending-chat-replies`);
+      if (!resp.ok) return;
+      const replies = await resp.json().catch(() => []);
+      if (!Array.isArray(replies) || !replies.length) return;
+
+      LOG(`VPS queue: ${replies.length} pending chat reply/replies`);
+      for (const r of replies) {
+        if (r.username && r.message) {
+          LOG(`← VPS queue reply for "${r.username}": "${r.message.slice(0, 60)}"`);
+          await replyToUser(r.username, r.message);
+        }
+      }
+    } catch (e) {
+      WARN("pollVpsChatReplies error:", e.message);
+    }
+  }
+
   async function sendReplyToUser(username, text) {
     const item = findConvByUsername(username);
     if (!item) { WARN(`Sidebar item for "${username}" not found`); return; }
@@ -568,6 +634,7 @@
   handles.poll = setInterval(() => {
     if (!isContextValid()) { shutdown("context lost in poll interval"); return; }
     pollTelegram();
+    pollVpsChatReplies();
   }, 5000);
 
   LOG("Chat monitor started on", window.location.href);

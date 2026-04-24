@@ -304,6 +304,213 @@ def upload():
                 pass
 
 
+# ── Chat reply via Playwright keyboard ────────────────────────────────────────
+
+def find_chat_page(browser):
+    """Return the Playwright Page for the open Z2U Chat page."""
+    all_pages = [p for ctx in browser.contexts for p in ctx.pages]
+    # Exact Chat URL
+    for page in all_pages:
+        if "z2u.com/Chat" in page.url or "z2u.com/chat" in page.url:
+            return page
+    # Fallback: any z2u tab
+    for page in all_pages:
+        if "z2u.com" in page.url:
+            return page
+    return None
+
+
+def do_chat_reply(username: str, message: str) -> dict:
+    """
+    Connect to Chrome via CDP, find the Z2U Chat tab, click the
+    correct conversation sidebar item, then type the message using
+    real keyboard events (isTrusted=true, delay=50ms per char).
+    """
+    with sync_playwright() as pw:
+        try:
+            browser = pw.chromium.connect_over_cdp(CDP_URL)
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": f"CDP connect failed — is Chrome running with --remote-debugging-port=9222? {e}",
+            }
+
+        page = find_chat_page(browser)
+        if not page:
+            return {
+                "ok": False,
+                "error": "No Z2U Chat tab found. Open z2u.com/Chat in Chrome.",
+            }
+
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+
+        print(f"[bridge/chat] Found chat page: {page.url}")
+
+        try:
+            # ── Click the sidebar item for this username ───────────────────
+            if username:
+                clicked = False
+                # Try class-based selectors first
+                sidebar_sels = [
+                    "[class*='chatListItem']",
+                    "[class*='chatItem']",
+                    "[class*='contactItem']",
+                    "[class*='userItem']",
+                    "[class*='imItem']",
+                    "li",
+                ]
+                for sel in sidebar_sels:
+                    try:
+                        items = page.locator(sel).all()
+                        for item in items:
+                            try:
+                                txt = item.inner_text(timeout=300)
+                                if username in txt:
+                                    item.click()
+                                    clicked = True
+                                    print(f"[bridge/chat] Clicked sidebar for '{username}'")
+                                    break
+                            except Exception:
+                                continue
+                        if clicked:
+                            break
+                    except Exception:
+                        continue
+
+                if not clicked:
+                    print(f"[bridge/chat] ⚠ Sidebar item for '{username}' not found — trying to type in current open chat.")
+
+                time.sleep(0.8)  # wait for chat panel to render
+
+            # ── Find the message input ─────────────────────────────────────
+            # Priority: textarea → contenteditable → text input
+            # Must NOT be inside the sidebar / search bar.
+            SIDEBAR_SEL = (
+                "[class*='sideBar'], [class*='sidebar'], [class*='chatList'], "
+                "[class*='chat-list'], aside, nav"
+            )
+            chat_input = None
+
+            for sel in [
+                "textarea:visible",
+                "div[contenteditable='true']:visible",
+                "input[type='text']:visible",
+            ]:
+                candidates = page.locator(sel).all()
+                for c in candidates:
+                    try:
+                        # Skip sidebar elements
+                        in_sidebar = page.evaluate(
+                            """(el) => !!el.closest(
+                                "[class*='sideBar'],[class*='sidebar'],[class*='chatList'],aside,nav"
+                            )""",
+                            c.element_handle(),
+                        )
+                        if in_sidebar:
+                            continue
+                        # Skip search-like inputs
+                        ph = (c.get_attribute("placeholder") or "").lower()
+                        if any(w in ph for w in ["search", "find", "filter"]):
+                            continue
+                        chat_input = c
+                        break
+                    except Exception:
+                        continue
+                if chat_input:
+                    break
+
+            if not chat_input:
+                return {"ok": False, "error": "Chat message input not found on page."}
+
+            # ── Focus + click, then keyboard.type with real events ─────────
+            chat_input.scroll_into_view_if_needed()
+            chat_input.click()
+            time.sleep(0.3)
+
+            # keyboard.type() dispatches real KeyboardEvents via CDP —
+            # the browser marks them isTrusted=true, same as hardware input.
+            page.keyboard.type(message, delay=50)
+            time.sleep(0.2)
+
+            # ── Press Enter to submit ──────────────────────────────────────
+            page.keyboard.press("Enter")
+            time.sleep(1.0)
+
+            # ── If the Send button is STILL visible, click it too ─────────
+            send_clicked = False
+            try:
+                send_sels = [
+                    "button[class*='send']:visible",
+                    "button[aria-label*='Send']:visible",
+                    "button[title*='Send']:visible",
+                    "[role='button'][class*='send']:visible",
+                ]
+                for s in send_sels:
+                    btn = page.locator(s).first
+                    if btn.is_visible(timeout=800):
+                        btn.click()
+                        send_clicked = True
+                        print("[bridge/chat] Clicked Send button.")
+                        break
+
+                # Text-based fallback
+                if not send_clicked:
+                    all_btns = page.locator("button:visible").all()
+                    for b in all_btns:
+                        try:
+                            txt = b.inner_text(timeout=300).strip().lower()
+                            if txt in ("send", "发送", "확인", "submit"):
+                                # Make sure it's NOT in the sidebar
+                                in_side = page.evaluate(
+                                    "(el) => !!el.closest('[class*=\"chatList\"],aside,nav')",
+                                    b.element_handle(),
+                                )
+                                if not in_side:
+                                    b.click()
+                                    send_clicked = True
+                                    print(f"[bridge/chat] Clicked send button: '{txt}'")
+                                    break
+                        except Exception:
+                            continue
+            except Exception:
+                pass  # Send button not found / already dismissed — that's fine
+
+            print(f"[bridge/chat] ✅ Reply sent to '{username}': '{message[:60]}'")
+            return {"ok": True, "message": f"Reply sent to {username!r} via Playwright keyboard."}
+
+        except Exception:
+            tb = traceback.format_exc()
+            print(f"[bridge/chat] ❌ Exception:\n{tb}")
+            return {"ok": False, "error": tb}
+
+
+@app.route("/chat-reply", methods=["OPTIONS"])
+def chat_reply_preflight():
+    return "", 204
+
+
+@app.route("/chat-reply", methods=["POST"])
+def chat_reply():
+    data     = request.get_json(force=True, silent=True) or {}
+    username = data.get("username", "")
+    message  = data.get("message", "")
+    order_id = data.get("orderId", "")
+
+    if not message:
+        return jsonify({"ok": False, "error": "No message provided"}), 400
+    if not username:
+        return jsonify({"ok": False, "error": "No username provided"}), 400
+
+    print(f"\n[bridge/chat] ▶ Chat-reply request — username={username!r}  orderId={order_id!r}  msg={message[:80]!r}")
+    result = do_chat_reply(username, message)
+    status = "✅" if result["ok"] else "❌"
+    print(f"[bridge/chat] {status} Result: {result}")
+    return jsonify(result)
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"ok": True, "status": "bridge running", "port": BRIDGE_PORT})
