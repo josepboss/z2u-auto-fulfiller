@@ -317,7 +317,14 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
                 "  el.dispatchEvent(new Event('input',  { bubbles: true })); "
                 "}"
             )
-            print("[bridge] Dispatched change+input events.")
+            print("[bridge] Dispatched change+input events via element handle.")
+
+            # "Shake" the page so Z2U sees the file without a folder window
+            page.evaluate(
+                "document.querySelector('input[type=\"file\"]')"
+                ".dispatchEvent(new Event('change', {bubbles: true}))"
+            )
+            print("[bridge] Dispatched page-level change event (shake).")
 
             # Step 5d: Human delay — give React 2 s to validate the file
             #          and enable the Submit button before we look for it.
