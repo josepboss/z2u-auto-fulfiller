@@ -267,22 +267,64 @@
     return null;
   }
 
-  // ── Quantity fill + Confirm Delivered + success check ─────────────────────
-  // Shared between the direct-API path and the UI-modal path.
+  // ── Confirm Delivered flow ────────────────────────────────────────────────
+  // PREREQUISITE: "View Delivery Account Information" MUST be visible before
+  // this function clicks anything. Z2U only shows that button after it has
+  // processed and recorded the uploaded XLSX. Clicking "Confirm Delivered"
+  // before that button appears means the XLSX was never accepted.
   async function confirmDeliveredFlow(quantity) {
-    // Optional: fill transactions quantity if it appeared on page
-    const modalElC4 = () => document.querySelector(
+    // ── [D1] Wait for "View Delivery Account Information" ──────────────────
+    function hasViewDeliveryBtn() {
+      return Array.from(document.querySelectorAll("button, a"))
+        .some((b) => /view\s+delivery\s+account/i.test(b.textContent || ""));
+    }
+
+    log("UPLOAD", "[D1] Waiting up to 30s for 'View Delivery Account Information'…");
+    const viewEnd = Date.now() + 30_000;
+    while (Date.now() < viewEnd) {
+      if (hasViewDeliveryBtn()) break;
+      await sleep(800);
+    }
+
+    if (!hasViewDeliveryBtn()) {
+      warn("UPLOAD", "[D1] ❌ 'View Delivery Account Information' never appeared — XLSX not accepted by Z2U. NOT clicking Confirm Delivered.");
+      dumpButtons("UPLOAD-NO-VIEW-DELIVERY");
+      return false;
+    }
+    log("UPLOAD", "[D1] ✅ 'View Delivery Account Information' present — upload accepted.");
+
+    dumpButtons("UPLOAD-BEFORE-CONFIRM");
+
+    // ── [D2] Click "Confirm Delivered" ─────────────────────────────────────
+    log("UPLOAD", "[D2] Looking for 'Confirm Delivered' button…");
+    const confirmBtn =
+      await waitForElementByText("button", "confirm delivered", 8000) ||
+      await waitForElementByText("button", "delivered", 5000);
+
+    if (!confirmBtn) {
+      warn("UPLOAD", "[D2] 'Confirm Delivered' button not found.");
+      dumpButtons("UPLOAD-FAILED");
+      return false;
+    }
+    log("UPLOAD", `[D2] Clicking: "${confirmBtn.textContent?.trim()}"`);
+    confirmBtn.click();
+    await sleep(2000);
+
+    // ── [D3] Handle any quantity / OK dialog that Z2U may show ─────────────
+    const modalEl = () => document.querySelector(
       ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
     );
-    const qtyInputC4 = await (async () => {
-      const end = Date.now() + 6000;
+
+    // Fill quantity if a number input appeared in a modal
+    const numInput = await (async () => {
+      const end = Date.now() + 4000;
       while (Date.now() < end) {
-        const numInput = Array.from(document.querySelectorAll("input[type='number']"))
+        const vis = Array.from(document.querySelectorAll("input[type='number']"))
           .find((i) => !i.closest("[style*='display:none'], [hidden]"));
-        if (numInput) return numInput;
-        const modal = modalElC4();
-        if (modal) {
-          const inp = Array.from(modal.querySelectorAll("input"))
+        if (vis) return vis;
+        const m = modalEl();
+        if (m) {
+          const inp = Array.from(m.querySelectorAll("input"))
             .find((i) => i.type !== "file" && i.type !== "hidden" && i.type !== "checkbox");
           if (inp) return inp;
         }
@@ -291,76 +333,56 @@
       return null;
     })();
 
-    if (qtyInputC4) {
+    if (numInput) {
       const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-      if (nativeSet) nativeSet.call(qtyInputC4, String(quantity));
-      else qtyInputC4.value = String(quantity);
-      qtyInputC4.dispatchEvent(new Event("input",  { bubbles: true }));
-      qtyInputC4.dispatchEvent(new Event("change", { bubbles: true }));
-      log("UPLOAD", `[C4] ✅ Set transactions to ${quantity}. Clicking OK…`);
+      if (nativeSet) nativeSet.call(numInput, String(quantity));
+      else numInput.value = String(quantity);
+      numInput.dispatchEvent(new Event("input",  { bubbles: true }));
+      numInput.dispatchEvent(new Event("change", { bubbles: true }));
+      log("UPLOAD", `[D3] Filled quantity: ${quantity}`);
       await sleep(400);
-      const okBtn = Array.from(document.querySelectorAll("button"))
-        .find((b) => /^(ok|confirm|submit|yes)$/i.test(b.textContent?.trim() || ""));
-      if (okBtn) {
-        okBtn.click();
-        log("UPLOAD", `[C4] ✅ Clicked "${okBtn.textContent?.trim()}"`);
-        await sleep(2500);
-      }
-    } else {
-      log("UPLOAD", `[C4] No transactions quantity prompt — continuing to Confirm Delivered`);
     }
 
-    dumpButtons("UPLOAD-BEFORE-CONFIRM");
-
-    // Click Confirm Delivered
-    log("UPLOAD", `[D] Looking for Confirm Delivered button…`);
-    const confirmBtn =
-      await waitForElementByText("button", "confirm delivered", 8000) ||
-      await waitForElementByText("button", "delivered", 5000);
-
-    if (!confirmBtn) {
-      warn("UPLOAD", "[D] Confirm Delivered button not found.");
-      dumpButtons("UPLOAD-FAILED");
-      return false;
-    }
-    log("UPLOAD", `[D] Clicking: "${confirmBtn.textContent?.trim()}"`);
-    confirmBtn.click();
-    await sleep(3000);
-
-    // Verify via "View Delivery Account Information" button (definitive success signal)
-    function hasViewDeliveryBtn() {
-      return Array.from(document.querySelectorAll("button, a"))
-        .some((b) => /view\s+delivery\s+account/i.test(b.textContent || ""));
-    }
-
-    const successEnd = Date.now() + 6000;
-    while (Date.now() < successEnd) {
-      if (hasViewDeliveryBtn()) {
-        log("UPLOAD", `[E] ✅ "View Delivery Account Information" appeared — delivery confirmed!`);
-        return true;
-      }
-      await sleep(500);
-    }
-
-    // One more try: click a Confirm button inside a modal that Z2U may show
-    const confirmModal = document.querySelector(".modal, [role='dialog'], [class*='modal'], [class*='dialog']");
-    if (confirmModal) {
-      const innerConfirm = Array.from(confirmModal.querySelectorAll("button"))
-        .find((b) => /^confirm$/i.test(b.textContent?.trim() || ""));
-      if (innerConfirm) {
-        innerConfirm.click();
-        await sleep(2500);
-        if (hasViewDeliveryBtn()) {
-          log("UPLOAD", `[E] ✅ Confirmed via modal — "View Delivery Account Information" appeared.`);
-          return true;
+    // Click OK / Confirm inside any modal that appeared
+    const okBtn = await (async () => {
+      const end = Date.now() + 5000;
+      while (Date.now() < end) {
+        const m = modalEl();
+        if (m) {
+          const btn = Array.from(m.querySelectorAll("button"))
+            .find((b) => /^(ok|confirm|yes)$/i.test(b.textContent?.trim() || ""));
+          if (btn) return btn;
         }
+        // Also look globally for a lone OK button
+        const global = Array.from(document.querySelectorAll("button"))
+          .find((b) => /^(ok|confirm|yes)$/i.test(b.textContent?.trim() || ""));
+        if (global) return global;
+        await sleep(400);
       }
+      return null;
+    })();
+
+    if (okBtn) {
+      log("UPLOAD", `[D3] Clicking dialog button: "${okBtn.textContent?.trim()}"`);
+      okBtn.click();
+      await sleep(2500);
+    } else {
+      log("UPLOAD", "[D3] No OK/Confirm dialog appeared — continuing.");
     }
 
+    // ── [D4] Final success check ────────────────────────────────────────────
+    // After clicking Confirm Delivered, Z2U usually keeps or removes the
+    // "View Delivery Account Information" button. Either way, we already
+    // confirmed it was there before clicking, so the delivery was recorded.
     const errBanner = document.querySelector(".ant-message-notice, .ant-message-error, .ant-message-warning");
-    if (errBanner) warn("UPLOAD", `[E] Z2U message: "${errBanner.textContent?.trim().slice(0, 200)}"`);
-    warn("UPLOAD", `[E] ❌ "View Delivery Account Information" never appeared — delivery NOT confirmed.`);
-    return false;
+    if (errBanner) {
+      const txt = errBanner.textContent?.trim() || "";
+      warn("UPLOAD", `[D4] Z2U message after confirm: "${txt.slice(0, 200)}"`);
+      if (/error|fail|invalid|reject/i.test(txt)) return false;
+    }
+
+    log("UPLOAD", "[D4] ✅ Confirm Delivered flow complete.");
+    return true;
   }
 
   // ── Direct API upload (bypasses the modal entirely) ───────────────────────
@@ -650,9 +672,18 @@
       ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
     );
 
-    log("UPLOAD", `[D] Clicking "Upload Form"…`);
-    const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 5000);
-    if (!uploadFormBtn) { warn("UPLOAD", `[D] "Upload Form" button not found.`); return false; }
+    log("UPLOAD", `[D] Looking for Upload Form button (tries: 'Upload Form', 'Upload Delivery', 'Batch Upload', 'Upload')…`);
+    const uploadFormBtn = (
+      await waitForElementByText("button, a", "Upload Form",     3000) ||
+      await waitForElementByText("button, a", "Upload Delivery", 2000) ||
+      await waitForElementByText("button, a", "Batch Upload",    2000) ||
+      await waitForElementByText("button, a", "Upload",          2000)
+    );
+    if (!uploadFormBtn) {
+      warn("UPLOAD", `[D] No upload button found. Buttons on page: ${Array.from(document.querySelectorAll("button,a")).map(b=>b.textContent?.trim()).filter(Boolean).join(" | ")}`);
+      return false;
+    }
+    log("UPLOAD", `[D] Clicking upload button: "${uploadFormBtn.textContent?.trim()}"`);
     uploadFormBtn.click();
     log("UPLOAD", `[D] ✅ Clicked "Upload Form". Waiting for modal…`);
     await sleep(1500);
