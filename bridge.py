@@ -264,53 +264,36 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
 
             MODAL_SEL = ".ant-modal-content"
 
-            # ── Step 4: Wait for modal to be fully visible ────────────────
-            page.wait_for_selector(".ant-modal-content", state="visible")
-            time.sleep(1)
+            # 1. Wait a moment for the popup to physically appear
+            time.sleep(2)
 
-            # ── Step 5: Intercept file chooser via Select File button ──────
-            with page.expect_file_chooser() as fc_info:
-                page.click(
-                    ".ant-modal-content button.ant-btn-primary, "
-                    ".ant-upload-select"
-                )
-
-            file_chooser = fc_info.value
-            file_chooser.set_files(tmp_path)
-            print(f"[bridge] ✅ File attached: {tmp_path}")
-
-            # ── Step 6: Pause so Z2U can scan the file extension ──────────
-            print("[bridge] Waiting 4 s for Z2U to validate the file…")
-            time.sleep(4)
-
-            # ── Step 7: Click the real Submit button by its ID ─────────────
-            print("[bridge] Clicking the official Submit button (#sellFormSubmit)…")
-            page.wait_for_selector("#sellFormSubmit", state="visible")
-            page.click("#sellFormSubmit")
-            print("[bridge] ✅ Final Submit successful. Waiting for modal to close…")
-
-            # ── Step 7: Wait for modal to close ───────────────────────────
+            # 2. Trigger the "Real" file selection window
             try:
-                page.locator(MODAL_SEL).first.wait_for(state="hidden", timeout=15000)
-                print("[bridge] ✅ Modal closed — upload accepted by Z2U.")
-            except PWTimeout:
-                print("[bridge] ⚠ Modal did not close in 15 s — checking for error toast.")
+                with page.expect_file_chooser() as fc_info:
+                    page.click("button:has-text('Select File'), .ant-btn-primary", force=True)
 
-            # ── Step 7: Check for error toast ─────────────────────────────
+                file_chooser = fc_info.value
+                file_chooser.set_files(tmp_path)
+                print(f"[bridge] ✅ File attached: {tmp_path}")
+            except Exception as e:
+                print(f"[bridge] ❌ Failed to click Select File: {e}")
+                return {"ok": False, "error": str(e)}
+
+            # 3. CRITICAL PAUSE: Give Z2U time to validate the extension
+            print("[bridge] Waiting for Z2U validation...")
+            time.sleep(5)
+
+            # 4. The Golden Click using the ID you found
+            submit_id = "#sellFormSubmit"
             try:
-                err_loc = page.locator(
-                    ".ant-message-error:visible, .ant-message-warning:visible"
-                ).first
-                err_loc.wait_for(state="visible", timeout=2000)
-                msg = err_loc.inner_text().strip()
-                if msg:
-                    print(f"[bridge] ❌ Z2U toast: {msg}")
-                    return {"ok": False, "error": f"Z2U rejected upload: {msg[:300]}"}
-            except PWTimeout:
-                pass  # no error toast — good
-
-            print("[bridge] ✅ Upload complete.")
-            return {"ok": True, "message": "File uploaded via Playwright file-chooser."}
+                print(f"[bridge] Clicking {submit_id}...")
+                page.wait_for_selector(submit_id, state="visible", timeout=10000)
+                page.click(submit_id)
+                print("[bridge] ✅ SUBMIT clicked!")
+                return {"ok": True}
+            except Exception as e:
+                print(f"[bridge] ❌ Failed to click Submit: {e}")
+                return {"ok": False, "error": str(e)}
 
         except Exception:
             tb = traceback.format_exc()
