@@ -39,6 +39,51 @@
     console.error(`[Z2U] ${step} ❌ ${msg}`, ...extra);
   }
 
+  // ── Analytics helpers (fire-and-forget, no fulfillment impact) ────────────
+
+  function extractOrderAmount() {
+    // 1) Look for a labelled row: element containing "Price"/"Total" then a sibling
+    const allEls = Array.from(document.querySelectorAll("*"));
+    for (const el of allEls) {
+      if (el.childElementCount > 0) continue;
+      const t = (el.textContent || "").trim();
+      if (/^(price|total|order\s*(total|price|value)|sale\s*price|amount)$/i.test(t)) {
+        const candidates = [
+          el.nextElementSibling,
+          el.parentElement?.nextElementSibling,
+          el.parentElement?.nextElementSibling?.querySelector("span,div,p"),
+        ];
+        for (const c of candidates) {
+          if (!c) continue;
+          const m = (c.textContent || "").trim().match(/\$?\s*(\d+(?:\.\d{1,2})?)/);
+          if (m) {
+            const v = parseFloat(m[1]);
+            if (v > 0 && v < 100000) return v;
+          }
+        }
+      }
+    }
+    // 2) Fallback: scan visible text for $XX.XX patterns, pick the largest plausible one
+    const matches = (document.body.innerText || "").match(/\$\s*(\d+(?:\.\d{1,2})?)/g);
+    if (matches) {
+      const amounts = matches
+        .map((m) => parseFloat(m.replace("$", "").trim()))
+        .filter((v) => v > 0.5 && v < 100000);
+      if (amounts.length) return Math.max(...amounts);
+    }
+    return null;
+  }
+
+  function recordAnalytics(orderId, title, quantity) {
+    try {
+      const amount = extractOrderAmount();
+      chrome.runtime.sendMessage({
+        type: "RECORD_ANALYTICS",
+        orderId, title, quantity, amount,
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
   // Dumps all visible button/link texts on the page — useful for debugging
   function dumpButtons(label) {
     const btns = Array.from(document.querySelectorAll("button, a[class*='btn'], a[class*='button']"))
@@ -968,6 +1013,9 @@
       }
     }
     log("DETAIL", `[5] Using quantity: ${quantity}`);
+
+    // ── Analytics: fire-and-forget (no fulfillment impact) ────────────────────
+    recordAnalytics(orderId, title, quantity);
 
     log("DETAIL", `🚀 Starting fulfillment | orderId=${orderId} | qty=${quantity}`);
     dumpButtons("DETAIL-BEFORE-PREPARING");
