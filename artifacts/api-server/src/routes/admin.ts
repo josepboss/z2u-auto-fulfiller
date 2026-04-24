@@ -72,6 +72,9 @@ const html = `<!DOCTYPE html>
   button:hover{background:#4f46e5}
   button.danger{background:#ef4444}
   .badge{background:#6366f1;color:#fff;font-size:.65rem;font-weight:700;border-radius:.25rem;padding:.1rem .35rem;vertical-align:middle;margin-left:.35rem}
+  button.pg{margin-top:0;padding:.3rem .75rem;background:#1e293b;border:1px solid #334155;font-size:.8rem;color:#cbd5e1}
+  button.pg:hover:not(:disabled){background:#334155}
+  button.pg:disabled{opacity:.35;cursor:default}
   button.danger:hover{background:#dc2626}
   button.dl{background:#0369a1;margin-top:0}
   button.dl:hover{background:#0284c7}
@@ -98,6 +101,11 @@ const html = `<!DOCTYPE html>
     <thead><tr><th>Date</th><th>Orders</th><th>Revenue (USD)</th><th>Avg / Order</th></tr></thead>
     <tbody id="analyticsBody"><tr><td colspan="4" style="color:#64748b">Loading...</td></tr></tbody>
   </table>
+  <div style="display:flex;align-items:center;justify-content:flex-end;gap:.75rem;margin-top:.75rem">
+    <button id="analyticsPrev" class="pg" onclick="_analyticsPage--;renderAnalyticsPage()" disabled>&#8592; Prev</button>
+    <span id="analyticsPageInfo" style="font-size:.8rem;color:#94a3b8"></span>
+    <button id="analyticsNext" class="pg" onclick="_analyticsPage++;renderAnalyticsPage()" disabled>Next &#8594;</button>
+  </div>
 </div>
 
 <div class="card">
@@ -233,21 +241,58 @@ document.getElementById('serviceSelect').addEventListener('change', function() {
   if (this.value) document.getElementById('serviceId').value = this.value;
 });
 
+let _analyticsData = [];
+let _analyticsPage  = 0;
+const ANALYTICS_PAGE_SIZE = 10;
+
+function renderAnalyticsPage() {
+  const tbody   = document.getElementById('analyticsBody');
+  const pageInfo = document.getElementById('analyticsPageInfo');
+  const btnPrev  = document.getElementById('analyticsPrev');
+  const btnNext  = document.getElementById('analyticsNext');
+  const data     = _analyticsData;
+
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b">No orders recorded yet. Analytics appear automatically when orders are detected.</td></tr>';
+    if (pageInfo) pageInfo.textContent = '';
+    return;
+  }
+
+  const totalPages = Math.ceil(data.length / ANALYTICS_PAGE_SIZE);
+  _analyticsPage   = Math.max(0, Math.min(_analyticsPage, totalPages - 1));
+
+  const start      = _analyticsPage * ANALYTICS_PAGE_SIZE;
+  const slice      = data.slice(start, start + ANALYTICS_PAGE_SIZE);
+  const todayDate  = new Date().toISOString().slice(0, 10);
+
+  tbody.innerHTML = slice.map(d => {
+    const avg     = d.orders > 0 ? (d.revenue / d.orders).toFixed(2) : '—';
+    const isToday = d.date === todayDate;
+    return \`<tr\${isToday ? ' style="background:#1a2744"' : ''}>
+      <td>\${d.date}\${isToday ? ' <span class="badge">today</span>' : ''}</td>
+      <td>\${d.orders}</td>
+      <td style="color:#22c55e;font-weight:600">\$\${d.revenue.toFixed(2)}</td>
+      <td style="color:#f59e0b">\$\${avg}</td>
+    </tr>\`;
+  }).join('');
+
+  if (pageInfo) pageInfo.textContent = \`Page \${_analyticsPage + 1} of \${totalPages}\`;
+  if (btnPrev)  btnPrev.disabled  = _analyticsPage === 0;
+  if (btnNext)  btnNext.disabled  = _analyticsPage >= totalPages - 1;
+}
+
 async function loadAnalytics() {
   try {
-    const res = await fetch('/api/admin/analytics');
+    const res  = await fetch('/api/admin/analytics');
     const data = await res.json();
-    const tbody = document.getElementById('analyticsBody');
-    const todayEl = document.getElementById('analyticsToday');
 
-    if (!data.length) {
-      tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b">No orders recorded yet. Analytics appear automatically when orders are detected.</td></tr>';
-      todayEl.innerHTML = '';
-      return;
-    }
+    _analyticsData = data;
+    _analyticsPage = 0;
 
+    const todayEl  = document.getElementById('analyticsToday');
     const todayDate = new Date().toISOString().slice(0, 10);
     const todayData = data.find(d => d.date === todayDate);
+
     if (todayData) {
       todayEl.innerHTML = \`
         <div><div style="font-size:.7rem;color:#94a3b8;letter-spacing:.05em">TODAY'S REVENUE</div>
@@ -261,16 +306,7 @@ async function loadAnalytics() {
       todayEl.innerHTML = '<span style="color:#64748b;font-size:.875rem">No orders today yet.</span>';
     }
 
-    tbody.innerHTML = data.map(d => {
-      const avg = d.orders > 0 ? (d.revenue / d.orders).toFixed(2) : '—';
-      const isToday = d.date === todayDate;
-      return \`<tr\${isToday ? ' style="background:#1a2744"' : ''}>
-        <td>\${d.date}\${isToday ? ' <span class="badge">today</span>' : ''}</td>
-        <td>\${d.orders}</td>
-        <td style="color:#22c55e;font-weight:600">\$\${d.revenue.toFixed(2)}</td>
-        <td style="color:#f59e0b">\$\${avg}</td>
-      </tr>\`;
-    }).join('');
+    renderAnalyticsPage();
   } catch(e) { console.error(e); }
 }
 
