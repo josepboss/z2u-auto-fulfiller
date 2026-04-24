@@ -414,6 +414,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "RECORD_ANALYTICS") {
+    const { orderId, title, quantity, amount } = message;
+    (async () => {
+      try {
+        const { serverUrl } = await chrome.storage.local.get("serverUrl");
+        const base = serverUrl || CONFIG.SERVER_URL;
+        await fetch(`${base}/api/admin/analytics/record`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ orderId, title, quantity, amount }),
+        });
+        console.log(`[analytics] recorded orderId=${orderId} amount=${amount}`);
+      } catch (e) {
+        console.log("[analytics] record failed:", e.message);
+      }
+    })();
+    return false;
+  }
+
   if (message.type === "MARK_PROCESSED") {
     const { orderId } = message;
     chrome.storage.local.get("processed", ({ processed }) => {
