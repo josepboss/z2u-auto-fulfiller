@@ -613,213 +613,39 @@
 
     warn("UPLOAD", "[C] Direct same-origin API failed.");
 
-    // ── Step C2: VPS server-side proxy upload ─────────────────────────────────
-    // The VPS backend POSTs to Z2U using the user's real session cookies.
-    // This runs entirely outside Chrome — Z2U's browser-side extension checks
-    // are completely irrelevant. httpOnly cookies (not readable by content script)
-    // are read by the extension background via chrome.cookies API.
-    log("UPLOAD", "[C2] Trying VPS proxy upload (server-side, outside browser)…");
+    // ── Step C_LOCAL: Local Playwright Bridge ─────────────────────────────────
+    // Sends the filled XLSX to bridge.py running on your local machine.
+    // bridge.py connects to your real Chrome via CDP and uploads the file from
+    // inside your live session — same IP, real cookies, zero detection surface.
+    log("UPLOAD", "[C_LOCAL] Sending XLSX to local Playwright bridge at http://localhost:5000/upload…");
     try {
-      const cookieResult = await new Promise((resolve) => {
-        chrome.runtime.sendMessage(
-          { type: "GET_Z2U_COOKIES" },
-          (r) => resolve(r || { ok: false, error: "No response" })
-        );
+      const bridgeResp = await fetch("http://localhost:5000/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileBytes: Array.from(filledBytes),
+          orderId:   _orderId,
+          pageUrl:   window.location.href,
+          filename:  uploadName,
+        }),
       });
-
-      if (!cookieResult.ok) {
-        warn("UPLOAD", `[C2] Could not get Z2U cookies: ${cookieResult.error}`);
+      if (!bridgeResp.ok) {
+        warn("UPLOAD", `[C_LOCAL] Bridge HTTP ${bridgeResp.status} — check bridge.py console.`);
       } else {
-        const { serverUrl } = await new Promise((r) =>
-          chrome.storage.local.get(["serverUrl"], r)
-        );
-        const base = serverUrl || CONFIG.SERVER_URL;
-        const vpsResp = await fetch(`${base}/api/admin/proxy-upload`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fileBytes: Array.from(filledBytes),
-            orderId: _orderId,
-            cookies: cookieResult.cookies,
-            note: "Delivered",
-            pageUrl: window.location.href,
-          }),
-        });
-        const vpsJson = await vpsResp.json().catch(() => ({}));
-        log("UPLOAD", `[C2] VPS proxy response: ok=${vpsJson.ok} url=${vpsJson.url} field=${vpsJson.field}`);
-        if (vpsJson.ok) {
-          log("UPLOAD", "[C2] ✅ VPS proxy upload succeeded — skipping modal.");
-          await sleep(1000);
+        const bridgeJson = await bridgeResp.json().catch(() => ({}));
+        if (bridgeJson.ok) {
+          log("UPLOAD", `[C_LOCAL] ✅ Bridge upload succeeded: ${bridgeJson.message || "ok"}`);
+          await sleep(1500);
           return await confirmDeliveredFlow(quantity);
         }
-        warn("UPLOAD", `[C2] VPS proxy failed: ${vpsJson.error || "unknown"}`);
-        if (vpsJson.results?.length) {
-          for (const r of vpsJson.results) {
-            log("UPLOAD", `  [C2] ${r.url} field=${r.field} HTTP ${r.status} → ${r.body?.slice(0, 150)}`);
-          }
-        }
+        warn("UPLOAD", `[C_LOCAL] Bridge returned failure: ${bridgeJson.error || "unknown"}`);
       }
     } catch (e) {
-      warn("UPLOAD", `[C2] VPS proxy threw: ${e.message}`);
+      warn("UPLOAD", `[C_LOCAL] Bridge unreachable (is bridge.py running?): ${e.message}`);
     }
 
-    warn("UPLOAD", "[C2] VPS proxy also failed — falling back to modal + JS injection.");
-
-    // ── Step D: Modal fallback — JS injection into React (no CDP at all) ──────
-    // injectFileAndUpdateReact calls React's onChange via __reactProps directly,
-    // bypassing isTrusted. Z2U cannot detect this because no debugger is involved.
-    const modalEl = () => document.querySelector(
-      ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
-    );
-
-    log("UPLOAD", `[D] Looking for Upload Form button (tries: 'Upload Form', 'Upload Delivery', 'Batch Upload', 'Upload')…`);
-    const uploadFormBtn = (
-      await waitForElementByText("button, a", "Upload Form",     3000) ||
-      await waitForElementByText("button, a", "Upload Delivery", 2000) ||
-      await waitForElementByText("button, a", "Batch Upload",    2000) ||
-      await waitForElementByText("button, a", "Upload",          2000)
-    );
-    if (!uploadFormBtn) {
-      warn("UPLOAD", `[D] No upload button found. Buttons on page: ${Array.from(document.querySelectorAll("button,a")).map(b=>b.textContent?.trim()).filter(Boolean).join(" | ")}`);
-      return false;
-    }
-    log("UPLOAD", `[D] Clicking upload button: "${uploadFormBtn.textContent?.trim()}"`);
-    uploadFormBtn.click();
-    log("UPLOAD", `[D] ✅ Clicked "Upload Form". Waiting for modal…`);
-    await sleep(1500);
-
-    const modalWaitEnd = Date.now() + 5000;
-    let m = null, modalFileInput = null;
-    while (Date.now() < modalWaitEnd) {
-      m = modalEl();
-      if (m) {
-        modalFileInput = Array.from(m.querySelectorAll("input[type='file']"))
-          .find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name));
-        if (modalFileInput) break;
-      }
-      await sleep(300);
-    }
-    if (!modalFileInput) {
-      const allInputs = Array.from(document.querySelectorAll("input[type='file']"));
-      warn("UPLOAD", `[D] No modal input. All: ${allInputs.map(i=>`id="${i.id}" name="${i.name}"`).join(" | ")}`);
-      modalFileInput = allInputs.find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name)) || null;
-    }
-    if (!modalFileInput) { err("UPLOAD", "[D] No file input found."); return false; }
-
-    log("UPLOAD", `[D] Modal input found: id="${modalFileInput.id}". Injecting file…`);
-    await sleep(800 + Math.floor(Math.random() * 500));
-    await injectFileAndUpdateReact(modalFileInput, file);
-    log("UPLOAD", `[D] File injected into React state.`);
-    await sleep(800 + Math.floor(Math.random() * 500));
-
-    // ── Step C2.5: Fill any required note/text fields in the modal ───────────
-    // Z2U's upload modal includes a required "note" textarea. Leaving it blank
-    // causes Z2U to reject the submission with "Please input note".
-    {
-      const noteCtx = modalEl() || document;
-      const textInputs = Array.from(noteCtx.querySelectorAll(
-        'textarea, input[type="text"], input:not([type="file"]):not([type="submit"])' +
-        ':not([type="button"]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"])'
-      ));
-      for (const ti of textInputs) {
-        if (!ti.value || !ti.value.trim()) {
-          ti.value = "Delivered";
-          ti.dispatchEvent(new Event("input",  { bubbles: true }));
-          ti.dispatchEvent(new Event("change", { bubbles: true }));
-          // Drive React's own onChange so component state actually updates
-          const rk = Object.keys(ti).find(
-            k => k.startsWith("__reactProps") || k.startsWith("__reactInternals")
-          );
-          if (rk && typeof ti[rk]?.onChange === "function") {
-            ti[rk].onChange({
-              target: ti, currentTarget: ti, type: "change", bubbles: true,
-              nativeEvent: { target: ti },
-              preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
-            });
-          } else {
-            const fk = Object.keys(ti).find(k => k.startsWith("__reactFiber"));
-            const fn = fk && ti[fk]?.memoizedProps?.onChange;
-            if (typeof fn === "function") {
-              fn({
-                target: ti, currentTarget: ti, type: "change", bubbles: true,
-                nativeEvent: { target: ti },
-                preventDefault: () => {}, stopPropagation: () => {}, persist: () => {},
-              });
-            }
-          }
-          log("UPLOAD", `[C2.5] Filled note field tag=${ti.tagName} id="${ti.id}" name="${ti.name}"`);
-        }
-      }
-      // Wait for React to commit all state changes before clicking SUBMIT
-      await sleep(800);
-    }
-
-    // ── Step C3: Click SUBMIT to upload the file first ────────────────────────
-    // Z2U flow: Submit → file uploads → THEN the transactions quantity field appears.
-    log("UPLOAD", `[C3] Looking for SUBMIT button to upload file…`);
-    const submitBtn = await (async () => {
-      const end = Date.now() + 5000;
-      while (Date.now() < end) {
-        const modal = modalEl();
-        if (modal) {
-          const btn = Array.from(modal.querySelectorAll("button"))
-            .find((b) => /^submit$/i.test(b.textContent?.trim() || ""));
-          if (btn) return btn;
-        }
-        const btn = Array.from(document.querySelectorAll("button"))
-          .find((b) => /^submit$/i.test(b.textContent?.trim() || ""));
-        if (btn) return btn;
-        await sleep(400);
-      }
-      return null;
-    })();
-
-    if (!submitBtn) {
-      err("UPLOAD", `[C3] SUBMIT button not found — aborting to avoid false confirmation.`);
-      return false;
-    }
-
-    submitBtn.click();
-    log("UPLOAD", `[C3] ✅ Clicked SUBMIT. Tracking Submit button removal (= modal close = upload accepted)…`);
-    await sleep(300); // brief pause so Z2U can process the click
-
-    // ── Wait for the Submit button to leave the DOM ───────────────────────────
-    // Checking document.contains(submitBtn) is selector-independent: when the
-    // upload modal closes (success), Z2U removes that button from the DOM.
-    // When the upload is rejected the modal stays open and the button stays in DOM.
-    // We do NOT use modalEl() because Z2U's modal may use custom CSS classes.
-    const waitForClose = Date.now() + 12000;
-    let uploadAccepted = false;
-    while (Date.now() < waitForClose) {
-      // Fast-fail: catch visible error toasts
-      const toastEls = Array.from(document.querySelectorAll(
-        ".ant-message-notice, .ant-message-error, .ant-message-warning, " +
-        ".el-message, [class*='toast'], [class*='notify']"
-      ));
-      for (const t of toastEls) {
-        const txt = t.textContent?.trim() || "";
-        if (txt && /input|note|select|file|upload|error|fail|invalid/i.test(txt)) {
-          err("UPLOAD", `[C3] Upload rejected: "${txt.slice(0, 200)}" — aborting.`);
-          return false;
-        }
-      }
-      // Submit button removed from DOM = modal closed = upload accepted
-      if (!document.contains(submitBtn)) {
-        uploadAccepted = true;
-        break;
-      }
-      await sleep(400);
-    }
-
-    if (!uploadAccepted) {
-      err("UPLOAD", `[D3] Upload modal did not close — upload rejected. Check extension logs.`);
-      return false;
-    }
-
-    log("UPLOAD", `[D3] ✅ Submit button gone — modal closed, upload accepted.`);
-    await sleep(500);
-
-    return await confirmDeliveredFlow(quantity);
+    err("UPLOAD", "[C_LOCAL] ❌ Upload failed. Make sure bridge.py is running on your local machine.");
+    return false;
   }
 
   // ══════════════════════════════════════════════════════════════════════════
