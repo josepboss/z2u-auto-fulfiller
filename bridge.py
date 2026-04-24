@@ -298,30 +298,11 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
             # Solution: find the hidden input in the modal and call
             # set_input_files(force=True) which bypasses visibility restrictions.
             print("[bridge] Setting file on hidden <input type='file'>…")
-            file_input = None
-
-            # Scope search to the modal first, then fall back to page-wide
-            for scope_sel in [MODAL_SEL, "body"]:
-                try:
-                    inp = page.locator(f"{scope_sel} input[type='file']").first
-                    inp.wait_for(state="attached", timeout=4000)
-                    file_input = inp
-                    print(f"[bridge] Found file input inside: {scope_sel}")
-                    break
-                except PWTimeout:
-                    continue
-                except Exception:
-                    continue
-
-            if not file_input:
-                return {
-                    "ok": False,
-                    "error": (
-                        "Could not find <input type='file'> inside the upload modal. "
-                        "Z2U may have changed their upload widget."
-                    ),
-                }
-
+            # Use a direct page-wide locator — no compound scoping that can
+            # resolve to the wrong element.  The upload modal is the only
+            # context where a file input will be present when we reach here.
+            file_input = page.locator("input[type='file']").first
+            file_input.wait_for(state="attached", timeout=6000)
             file_input.set_input_files(tmp_path)
             print(f"[bridge] ✅ File attached: {tmp_path}")
             time.sleep(1.5)  # React state update after file selection
