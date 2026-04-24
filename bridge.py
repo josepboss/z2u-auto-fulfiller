@@ -264,27 +264,30 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
 
             MODAL_SEL = ".ant-modal-content"
 
-            # ── Step 4: Wait for the .choose-file-button div ─────────────
-            select_div_selector = ".choose-file-button"
-            page.wait_for_selector(select_div_selector, state="visible", timeout=10000)
-            time.sleep(1.5)  # let modal settle
-            print("[bridge] Clicking the .choose-file-button div…")
+            # ── Step 4: Wait for modal to be fully visible ────────────────
+            page.wait_for_selector(".ant-modal-content", state="visible")
+            time.sleep(1)
 
-            # ── Step 5: Intercept file chooser via direct div click ────────
+            # ── Step 5: Intercept file chooser via Select File button ──────
             with page.expect_file_chooser() as fc_info:
-                page.click(select_div_selector, force=True)
+                page.click(
+                    ".ant-modal-content button.ant-btn-primary, "
+                    ".ant-upload-select"
+                )
 
             file_chooser = fc_info.value
             file_chooser.set_files(tmp_path)
             print(f"[bridge] ✅ File attached: {tmp_path}")
 
-            # ── Step 6: Give Z2U 4 s to scan the file, then click SUBMIT ──
+            # ── Step 6: Pause so Z2U can scan the file extension ──────────
             print("[bridge] Waiting 4 s for Z2U to validate the file…")
             time.sleep(4)
 
-            submit_btn_selector = ".ant-modal-footer button.ant-btn-primary"
-            page.click(submit_btn_selector)
-            print("[bridge] ✅ SUBMIT complete. Waiting for modal to close…")
+            # ── Step 7: Click the real Submit button by its ID ─────────────
+            print("[bridge] Clicking the official Submit button (#sellFormSubmit)…")
+            page.wait_for_selector("#sellFormSubmit", state="visible")
+            page.click("#sellFormSubmit")
+            print("[bridge] ✅ Final Submit successful. Waiting for modal to close…")
 
             # ── Step 7: Wait for modal to close ───────────────────────────
             try:
