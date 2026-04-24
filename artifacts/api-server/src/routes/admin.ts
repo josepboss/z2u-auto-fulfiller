@@ -109,6 +109,19 @@ const html = `<!DOCTYPE html>
 </div>
 
 <div class="card">
+  <h2>🗂 Order Records <span style="font-size:.75rem;color:#64748b;font-weight:400">(individual — remove cancelled/unfulfilled)</span></h2>
+  <table id="recordsTable">
+    <thead><tr><th>Order ID</th><th>Title</th><th>Date</th><th>Amount</th><th></th></tr></thead>
+    <tbody id="recordsBody"><tr><td colspan="5" style="color:#64748b">Loading...</td></tr></tbody>
+  </table>
+  <div style="display:flex;align-items:center;justify-content:flex-end;gap:.75rem;margin-top:.75rem">
+    <button id="recordsPrev" class="pg" onclick="_recordsPage--;renderRecordsPage()" disabled>&#8592; Prev</button>
+    <span id="recordsPageInfo" style="font-size:.8rem;color:#94a3b8"></span>
+    <button id="recordsNext" class="pg" onclick="_recordsPage++;renderRecordsPage()" disabled>Next &#8594;</button>
+  </div>
+</div>
+
+<div class="card">
   <h2>Add / Update Mapping</h2>
   <label>Z2U Offer Title (exact match)</label>
   <input id="title" placeholder="e.g. FIFA 25 PS4 Coins 1M" />
@@ -310,11 +323,69 @@ async function loadAnalytics() {
   } catch(e) { console.error(e); }
 }
 
+let _recordsData = [];
+let _recordsPage  = 0;
+const RECORDS_PAGE_SIZE = 15;
+
+function renderRecordsPage() {
+  const tbody    = document.getElementById('recordsBody');
+  const pageInfo = document.getElementById('recordsPageInfo');
+  const btnPrev  = document.getElementById('recordsPrev');
+  const btnNext  = document.getElementById('recordsNext');
+  const data     = _recordsData;
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:#64748b">No records yet.</td></tr>';
+    if (pageInfo) pageInfo.textContent = '';
+    return;
+  }
+  const totalPages = Math.ceil(data.length / RECORDS_PAGE_SIZE);
+  _recordsPage = Math.max(0, Math.min(_recordsPage, totalPages - 1));
+  const start  = _recordsPage * RECORDS_PAGE_SIZE;
+  const slice  = data.slice(start, start + RECORDS_PAGE_SIZE);
+  tbody.innerHTML = slice.map(r => {
+    const amt    = typeof r.amount === 'number' ? '\$' + r.amount.toFixed(2) : '—';
+    const title  = (r.title || '').slice(0, 48) || '<em style="color:#64748b">unmapped</em>';
+    return \`<tr>
+      <td style="font-family:monospace;font-size:.8rem">\${r.orderId}</td>
+      <td style="font-size:.8rem">\${title}</td>
+      <td style="font-size:.8rem">\${r.date}</td>
+      <td style="color:#22c55e;font-size:.8rem">\${amt}</td>
+      <td><button class="danger" style="padding:.25rem .6rem;font-size:.75rem" onclick="removeRecord('\${r.orderId}')">Remove</button></td>
+    </tr>\`;
+  }).join('');
+  if (pageInfo) pageInfo.textContent = \`Page \${_recordsPage + 1} of \${totalPages}\`;
+  if (btnPrev)  btnPrev.disabled  = _recordsPage === 0;
+  if (btnNext)  btnNext.disabled  = _recordsPage >= totalPages - 1;
+}
+
+async function loadRecords() {
+  try {
+    const res  = await fetch('/api/admin/analytics/records');
+    _recordsData = await res.json();
+    _recordsPage = 0;
+    renderRecordsPage();
+  } catch(e) { console.error(e); }
+}
+
+async function removeRecord(orderId) {
+  if (!confirm('Remove this order record from analytics? This cannot be undone.')) return;
+  const res = await fetch('/api/admin/analytics/' + encodeURIComponent(orderId), { method: 'DELETE' });
+  if (res.ok) {
+    showMsg('Record removed.', true);
+    loadAnalytics();
+    loadRecords();
+  } else {
+    showMsg('Failed to remove record.', false);
+  }
+}
+
 loadServices();
 loadMappings();
 loadOrders();
 loadAnalytics();
+loadRecords();
 setInterval(loadAnalytics, 60000);
+setInterval(loadRecords, 60000);
 </script>
 </body>
 </html>`;
@@ -403,6 +474,25 @@ router.get("/admin/analytics", (_req, res) => {
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 30);
   res.json(sorted);
+});
+
+router.get("/admin/analytics/records", (_req, res) => {
+  const records = loadAnalytics()
+    .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
+  res.json(records);
+});
+
+router.delete("/admin/analytics/:orderId", (req, res) => {
+  const { orderId } = req.params;
+  const records = loadAnalytics();
+  const before  = records.length;
+  const updated = records.filter((r) => r.orderId !== orderId);
+  if (updated.length === before) {
+    res.status(404).json({ error: "Record not found" });
+    return;
+  }
+  saveAnalytics(updated);
+  res.json({ ok: true, removed: before - updated.length });
 });
 
 // ── Pending chat-reply queue ──────────────────────────────────────────────────
