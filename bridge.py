@@ -59,6 +59,55 @@ app = Flask(__name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _dump_page_state(page, label: str):
+    """Print every visible button/link text + the current URL for debugging."""
+    try:
+        url = page.url
+        texts = []
+        for el in page.locator("button, a, [role='button']").all():
+            try:
+                t = el.inner_text(timeout=300).strip()
+                if t:
+                    texts.append(repr(t))
+            except Exception:
+                pass
+        print(f"[bridge] PAGE DUMP [{label}]  url={url}")
+        print(f"[bridge] PAGE DUMP [{label}]  elements: {texts[:60]}")
+    except Exception as e:
+        print(f"[bridge] PAGE DUMP [{label}] failed: {e}")
+
+
+def _find_upload_btn(page):
+    """
+    Scan for any visible Upload-Form button variant.
+    Returns (element, matched_text) or (None, None).
+    Tries <a>, <button>, and [role=button] with several text variants.
+    """
+    TEXT_VARIANTS = [
+        "Upload Form",
+        "Upload Delivery",
+        "Batch Upload",
+        "Upload",
+        "上传交付",
+        "上传",
+    ]
+    for text in TEXT_VARIANTS:
+        for sel in [
+            f"a:has-text('{text}')",
+            f"button:has-text('{text}')",
+            f"[role='button']:has-text('{text}')",
+        ]:
+            try:
+                el = page.locator(sel).first
+                el.wait_for(state="visible", timeout=1500)
+                return el, text
+            except PWTimeout:
+                continue
+            except Exception:
+                continue
+    return None, None
+
+
 def find_z2u_page(browser, order_id: str, page_url: str):
     """
     Return the Playwright Page for the open Z2U order-detail page.
@@ -91,102 +140,137 @@ def find_z2u_page(browser, order_id: str, page_url: str):
 
 def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
     """
-    Connect to Chrome via CDP, find the Z2U tab, and upload the XLSX file.
+    Connect to Chrome via CDP, navigate directly to the order detail page,
+    then upload the filled XLSX using Playwright's expect_file_chooser().
 
-    Strategy:
-      1. Click the green "Upload Form" button using has-text selectors.
-      2. Intercept the native OS file-chooser via expect_file_chooser().
-         Z2U's button triggers a real file-chooser dialog — this is why
-         set_input_files() on the hidden <input> didn't work. The file-chooser
-         intercept captures that dialog and sets the file path directly.
-      3. Fill the note textarea ("Delivered").
-      4. Click Submit / Confirm inside the popup.
-      5. Wait for the modal to close (button removed from DOM).
-
-    tmp_path on macOS will be a POSIX path such as
-      /var/folders/.../z2u_ORDER_abc.xlsx
-    which is exactly what Playwright expects on Mac.
+    Key design decisions
+    --------------------
+    • We ALWAYS call page.goto(page_url) so we are guaranteed to be on the
+      correct page — even if the extension's background alarm already navigated
+      the tab back to /sellOrder/index while we were waiting.
+    • We scroll through the page in 3 passes so the "Upload Form" button is
+      exposed even when it sits below the fold.
+    • We dump every visible button/link text to the terminal when the button
+      is not found, so you can copy the exact label and fix the selector.
+    • expect_file_chooser() intercepts the native OS file-picker that Z2U's
+      button triggers — set_input_files() on the hidden <input> does not work.
     """
     with sync_playwright() as pw:
-        # ── Connect ───────────────────────────────────────────────────────
+        # ── Connect to Chrome ─────────────────────────────────────────────
         try:
             browser = pw.chromium.connect_over_cdp(CDP_URL)
         except Exception as e:
             return {
                 "ok": False,
                 "error": (
-                    f"CDP connection failed — is Chrome running with "
+                    f"CDP connect failed — is Chrome running with "
                     f"--remote-debugging-port=9222? Detail: {e}"
                 ),
             }
 
-        # ── Find the order-detail tab ─────────────────────────────────────
-        page = find_z2u_page(browser, order_id, page_url)
+        # ── Pick any Z2U tab (we will navigate it to the right URL) ──────
+        all_pages = [p for ctx in browser.contexts for p in ctx.pages]
+        page = None
+
+        # Prefer a tab already on a z2u.com/sellOrder detail page
+        for p in all_pages:
+            if "z2u.com/sellOrder" in p.url and "/index" not in p.url:
+                page = p
+                break
+        # Any z2u.com tab
         if not page:
-            return {
-                "ok": False,
-                "error": (
-                    "No Z2U tab found in Chrome. "
-                    "Open z2u.com/sellOrder and navigate to the order detail page."
-                ),
-            }
+            for p in all_pages:
+                if "z2u.com" in p.url:
+                    page = p
+                    break
+        # Last resort: first open tab
+        if not page and all_pages:
+            page = all_pages[0]
+
+        if not page:
+            return {"ok": False, "error": "No browser tabs found. Is Chrome running?"}
+
+        print(f"[bridge] Selected tab: {page.url}")
+        print(f"[bridge] Navigating to: {page_url}")
+        print(f"[bridge] File path: {tmp_path}")
 
         try:
             page.bring_to_front()
         except Exception:
             pass
 
-        print(f"[bridge] Found Z2U page: {page.url}")
-        print(f"[bridge] File to upload (POSIX path): {tmp_path}")
-
         try:
-            # ── Step 1: Locate the "Upload Form" green button ─────────────
-            # Z2U renders it as either an <a> or <button> depending on page version.
-            UPLOAD_BTN_SEL = (
-                "a:has-text('Upload Form'), "
-                "button:has-text('Upload Form'), "
-                "a:has-text('Upload Delivery'), "
-                "button:has-text('Upload Delivery'), "
-                "a:has-text('Batch Upload'), "
-                "button:has-text('Batch Upload')"
-            )
+            # ── Step 1: Navigate directly to the order detail page ────────
+            # This is the critical fix: always go to page_url so the tab is
+            # guaranteed to be showing the order that needs uploading, not the
+            # list page or some previously-navigated page.
+            if page_url:
+                if page.url != page_url:
+                    print("[bridge] Navigating to order page…")
+                    page.goto(page_url, wait_until="domcontentloaded", timeout=25000)
+                    time.sleep(2.5)  # wait for React to render order detail
+                else:
+                    print("[bridge] Already on the correct page — waiting for render…")
+                    time.sleep(1.0)
+            else:
+                print("[bridge] ⚠ No page_url provided — using whatever tab is open.")
+                time.sleep(1.0)
 
-            try:
-                page.wait_for_selector(UPLOAD_BTN_SEL, state="visible", timeout=8000)
-            except PWTimeout:
-                # Dump all visible button/link texts to help debug
-                all_texts = []
-                try:
-                    els = page.locator("button:visible, a:visible").all()
-                    all_texts = [e.inner_text().strip() for e in els if e.inner_text().strip()]
-                except Exception:
-                    pass
-                msg = f"Selector Not Found — 'Upload Form' button not visible after 8 s. Visible buttons/links: {all_texts}"
-                print(f"[bridge] ❌ {msg}")
-                return {"ok": False, "error": msg}
+            print(f"[bridge] Current URL after navigation: {page.url}")
+            _dump_page_state(page, "after-navigate")
 
-            print("[bridge] ✅ 'Upload Form' button found. Opening file chooser…")
+            # ── Step 2: Find the Upload button (scroll if needed) ─────────
+            upload_el, matched_text = _find_upload_btn(page)
 
-            # ── Step 2: Click button + intercept native OS file-chooser ───
-            # expect_file_chooser() captures the browser's native file-picker
-            # event that Z2U's button triggers. This is the only reliable way
-            # to attach a file when the <input type="file"> is hidden/display:none.
-            with page.expect_file_chooser(timeout=8000) as fc_info:
-                page.click(UPLOAD_BTN_SEL)
+            if not upload_el:
+                print("[bridge] Button not found in viewport — scrolling to expose it…")
+                for scroll_frac in [0.33, 0.66, 1.0]:
+                    page.evaluate(
+                        f"window.scrollTo(0, document.body.scrollHeight * {scroll_frac})"
+                    )
+                    time.sleep(0.8)
+                    upload_el, matched_text = _find_upload_btn(page)
+                    if upload_el:
+                        print(f"[bridge] Found after scroll ({int(scroll_frac*100)}%)")
+                        break
+
+            if not upload_el:
+                _dump_page_state(page, "upload-btn-not-found")
+                return {
+                    "ok": False,
+                    "error": (
+                        "Selector Not Found — 'Upload Form' button not visible after "
+                        "navigation + 3-pass page scroll. "
+                        "Check the PAGE DUMP lines printed above in the bridge terminal "
+                        "to see what buttons Z2U is actually showing on this page."
+                    ),
+                }
+
+            print(f"[bridge] ✅ Found upload button: '{matched_text}'")
+            upload_el.scroll_into_view_if_needed()
+            time.sleep(0.4)
+
+            # ── Step 3: Click + intercept the native OS file chooser ──────
+            # Z2U's button triggers a native <input type="file"> dialog.
+            # expect_file_chooser() captures that dialog so we can set the
+            # file path without the OS picker ever appearing on screen.
+            print("[bridge] Waiting for file chooser…")
+            with page.expect_file_chooser(timeout=10000) as fc_info:
+                upload_el.click()
 
             file_chooser = fc_info.value
             file_chooser.set_files(tmp_path)
-            print(f"[bridge] ✅ File chooser resolved — set: {tmp_path}")
-            time.sleep(1.0)  # let Z2U's React state update after file selection
+            print(f"[bridge] ✅ File chooser resolved — attached: {tmp_path}")
+            time.sleep(1.5)  # wait for React to process the chosen file
 
-            # ── Step 3: Fill the required "Note" textarea in the popup ────
+            # ── Step 4: Fill "Note" field in the upload popup ─────────────
             MODAL_SEL = (
                 ".ant-modal-content, [role='dialog'], "
-                "[class*='modal'], [class*='Modal'], [class*='dialog']"
+                "[class*='modal']:not([class*='modalClose']), [class*='Modal']"
             )
             try:
                 modal = page.locator(MODAL_SEL).first
-                modal.wait_for(state="visible", timeout=5000)
+                modal.wait_for(state="visible", timeout=6000)
                 note_inputs = modal.locator(
                     "textarea:visible, input[type='text']:visible"
                 ).all()
@@ -199,46 +283,51 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
                     except Exception:
                         pass
             except PWTimeout:
-                print("[bridge] No modal visible after file selection — proceeding to submit.")
+                print("[bridge] No modal visible after file attach — trying submit directly.")
             except Exception:
                 pass  # non-fatal
 
-            # ── Step 4: Click Submit / Confirm in the popup ───────────────
+            # ── Step 5: Click Submit / Confirm ────────────────────────────
             submit_btn = None
-            for label in ["Submit", "Confirm", "OK", "确定"]:
-                try:
-                    # Look inside modal first, then globally
-                    btn = page.locator(
-                        f"{MODAL_SEL} button:has-text('{label}'), "
-                        f"button:has-text('{label}')"
-                    ).first
-                    btn.wait_for(state="visible", timeout=4000)
-                    submit_btn = btn
-                    print(f"[bridge] Found submit button: '{label}'")
+            for label in ["Submit", "Confirm", "OK", "确定", "提交"]:
+                for sel in [
+                    f"{MODAL_SEL} button:has-text('{label}')",
+                    f"button:has-text('{label}')",
+                ]:
+                    try:
+                        btn = page.locator(sel).first
+                        btn.wait_for(state="visible", timeout=3000)
+                        submit_btn = btn
+                        print(f"[bridge] Found submit button: '{label}'")
+                        break
+                    except PWTimeout:
+                        continue
+                    except Exception:
+                        continue
+                if submit_btn:
                     break
-                except PWTimeout:
-                    continue
-                except Exception:
-                    continue
 
             if not submit_btn:
+                _dump_page_state(page, "submit-not-found")
                 return {
                     "ok": False,
-                    "error": "Submit/Confirm button not found in upload popup after file selection.",
+                    "error": (
+                        "Submit/Confirm button not found in upload popup after file attach. "
+                        "See PAGE DUMP above for what is visible."
+                    ),
                 }
 
             submit_btn.click()
             print("[bridge] ✅ Clicked Submit. Waiting for popup to close…")
 
-            # ── Step 5: Wait for modal to disappear (upload accepted) ─────
+            # ── Step 6: Wait for modal to close ───────────────────────────
             try:
-                page.locator(MODAL_SEL).first.wait_for(state="hidden", timeout=12000)
+                page.locator(MODAL_SEL).first.wait_for(state="hidden", timeout=15000)
                 print("[bridge] ✅ Modal closed — upload accepted by Z2U.")
             except PWTimeout:
-                # Check for error toast before giving up
-                pass
+                print("[bridge] ⚠ Modal did not close in 15 s — checking for error toast.")
 
-            # ── Step 6: Check for error toast ─────────────────────────────
+            # ── Step 7: Check for error toast ─────────────────────────────
             try:
                 err_loc = page.locator(
                     ".ant-message-error:visible, .ant-message-warning:visible"
@@ -246,7 +335,7 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
                 err_loc.wait_for(state="visible", timeout=2000)
                 msg = err_loc.inner_text().strip()
                 if msg:
-                    print(f"[bridge] ❌ Z2U error toast: {msg}")
+                    print(f"[bridge] ❌ Z2U toast: {msg}")
                     return {"ok": False, "error": f"Z2U rejected upload: {msg[:300]}"}
             except PWTimeout:
                 pass  # no error toast — good
