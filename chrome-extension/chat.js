@@ -100,6 +100,24 @@
   }
 
   // ── Telegram polling ────────────────────────────────────────────────────────
+  // Throttle: at most one refresh per 10 s (prevents flooding if bot gets spammed)
+  let lastRefreshAt = 0;
+
+  async function triggerRefresh(token, chatId) {
+    const now = Date.now();
+    if (now - lastRefreshAt < 10_000) {
+      LOG("Refresh throttled — last refresh was less than 10 s ago");
+      return;
+    }
+    lastRefreshAt = now;
+    await tgSend(token, chatId, "🔄 Refreshing Z2U Chat…");
+    LOG("Refresh requested from Telegram — reloading page");
+    // Reset the forwarded-preview cache so we re-forward everything that is
+    // currently unread after the reload (not just truly-new messages).
+    await setStorage({ chatForwarded: {} });
+    location.reload();
+  }
+
   async function pollTelegram() {
     if (!isContextValid()) { shutdown("context lost during poll"); return; }
     const cfg = await getTgConfig();
@@ -119,12 +137,27 @@
         lastOffset = Math.max(lastOffset, update.update_id + 1);
         const msg = update.message;
         if (!msg?.text) continue;
+
+        // Only process messages from the configured chat (ignore strangers)
+        if (String(msg.chat.id) !== String(cfg.tgChatId)) continue;
+
         const replyToId = msg.reply_to_message?.message_id;
-        if (!replyToId) continue;
-        const username = map[String(replyToId)];
-        if (!username) continue;
-        LOG(`← Telegram reply for "${username}": "${msg.text}"`);
-        await sendReplyToUser(username, msg.text);
+
+        if (replyToId) {
+          // ── Reply to a forwarded notification → send to Z2U buyer ─────────
+          const username = map[String(replyToId)];
+          if (username) {
+            LOG(`← Telegram reply for "${username}": "${msg.text}"`);
+            await sendReplyToUser(username, msg.text);
+          }
+        } else {
+          // ── Free-form message (not a reply) → treat as a refresh request ──
+          // Any text works: "refresh", "/refresh", "r", "check", etc.
+          LOG(`← Telegram message (not a reply): "${msg.text}" → triggering refresh`);
+          await setStorage({ tgOffset: lastOffset });
+          await triggerRefresh(cfg.tgToken, cfg.tgChatId);
+          return; // page is reloading; no point continuing
+        }
       }
 
       await setStorage({ tgOffset: lastOffset });
