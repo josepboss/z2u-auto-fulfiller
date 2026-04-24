@@ -525,26 +525,11 @@
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await sleep(500);
 
-    // ── Step B: Download file to disk FIRST (before opening the modal) ────────
-    // IMPORTANT: do NOT pre-inject into any page-level input. Pre-injection
-    // causes the modal to open with the file already selected (in milliseconds),
-    // which Z2U detects as non-human and rejects with "Please input note".
-    // The correct sequence: file on disk → open empty modal → CDP select.
-    log("UPLOAD", `[B] Downloading XLSX to disk before opening modal…`);
-    const dlResult = await new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        { type: "CDP_DOWNLOAD_FILE", fileBytes: Array.from(filledBytes), filename: uploadName },
-        (r) => resolve(r || { ok: false, error: "No response from background" })
-      );
-    });
-    if (!dlResult.ok) {
-      err("UPLOAD", `[B] Download failed: ${dlResult.error}`);
-      return false;
-    }
-    const onDiskPath = dlResult.filePath;
-    log("UPLOAD", `[B] ✅ File on disk: "${onDiskPath}"`);
-
-    // ── Step C: Click "Upload Form" — modal will open EMPTY ──────────────────
+    // ── Step C: Click "Upload Form" — modal opens EMPTY ─────────────────────
+    // No pre-injection, no CDP (Z2U detects the debugger banner and blocks with
+    // "extensions to upload is not allowed"). Pure JS injection into the modal's
+    // file input is the correct approach: injectFileAndUpdateReact() calls
+    // React's own onChange handler via __reactProps, bypassing isTrusted checks.
     log("UPLOAD", `[C] Clicking "Upload Form"…`);
     const uploadFormBtn = await waitForElementByText("button, a", "Upload Form", 5000);
     if (!uploadFormBtn) {
@@ -552,19 +537,15 @@
       return false;
     }
     uploadFormBtn.click();
-    log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal to open empty…`);
+    log("UPLOAD", `[C] ✅ Clicked "Upload Form". Waiting for modal…`);
     await sleep(1500);
 
-    // ── Step C2: Wait for modal to open empty, then CDP-select from disk ────────
-    // The modal opens empty (no pre-injection). We wait for the file input to
-    // appear, pause for a human-like delay, then use CDP DOM.setFileInputFiles
-    // with the already-downloaded on-disk path. This mimics the user browsing
-    // to their Downloads folder and selecting the file — isTrusted FileList.
+    // ── Step C2: Inject file into modal file input via React props directly ───
     const modalEl = () => document.querySelector(
       ".ant-modal, .ant-modal-content, .modal, [role='dialog'], [class*='modal'], [class*='dialog']"
     );
 
-    // Wait up to 5s for the modal + its file input to appear
+    // Wait up to 5s for modal + file input
     const modalWaitEnd = Date.now() + 5000;
     let m = null, modalFileInput = null;
     while (Date.now() < modalWaitEnd) {
@@ -579,37 +560,26 @@
 
     if (!modalFileInput) {
       const allInputs = Array.from(document.querySelectorAll("input[type='file']"));
-      warn("UPLOAD", `[C2] No modal file input. All page inputs: ${allInputs.map(i=>`id="${i.id}" name="${i.name}"`).join(" | ")}`);
+      warn("UPLOAD", `[C2] No modal file input. All: ${allInputs.map(i=>`id="${i.id}" name="${i.name}"`).join(" | ")}`);
       modalFileInput = allInputs.find((i) => !/filepond|order_before|order_after/i.test(i.id + i.name)) || null;
     }
 
     if (!modalFileInput) {
-      err("UPLOAD", "[C2] No file input found anywhere — cannot upload.");
+      err("UPLOAD", "[C2] No file input found — cannot upload.");
       return false;
     }
 
-    log("UPLOAD", `[C2] ✅ Modal open, file input empty: id="${modalFileInput.id}" name="${modalFileInput.name}"`);
+    log("UPLOAD", `[C2] Modal file input found: id="${modalFileInput.id}" name="${modalFileInput.name}"`);
 
-    // Human-like delay: "reading the modal" before selecting file
-    await sleep(1200 + Math.floor(Math.random() * 800));
+    // Human-like delay before interacting
+    await sleep(800 + Math.floor(Math.random() * 600));
 
-    // CDP setFileInputFiles with the already-downloaded on-disk path
-    log("UPLOAD", "[C2] Requesting CDP file selection (setFileInputFiles)…");
-    const cdpResult = await new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        { type: "CDP_SET_FILE_BY_PATH", filePath: onDiskPath },
-        (r) => resolve(r || { ok: false, error: "No response from background" })
-      );
-    });
+    // Inject file into React state via __reactProps (no CDP, no debugger)
+    const injected = await injectFileAndUpdateReact(modalFileInput, file);
+    log("UPLOAD", `[C2] JS injection done — files.length=${injected ? 1 : 0}`);
 
-    if (!cdpResult.ok) {
-      err("UPLOAD", `[C2] CDP setFileInputFiles failed: ${cdpResult.error}`);
-      return false;
-    }
-    log("UPLOAD", "[C2] ✅ File selected via CDP — isTrusted FileList created.");
-
-    // Human-like delay: "file appeared in modal, reviewing before clicking Submit"
-    await sleep(1000 + Math.floor(Math.random() * 1000));
+    // Human-like delay after file appears in modal
+    await sleep(800 + Math.floor(Math.random() * 500));
 
     // ── Step C2.5: Fill any required note/text fields in the modal ───────────
     // Z2U's upload modal includes a required "note" textarea. Leaving it blank
