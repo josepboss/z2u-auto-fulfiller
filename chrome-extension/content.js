@@ -397,6 +397,14 @@
     }
 
     // ── [D2c] Click Confirm Delivered ─────────────────────────────────────
+    // Set a persistent flag BEFORE the click resolves — if Z2U reloads the
+    // page (as it does for Preparing), this flag survives and the new content
+    // script's [0c] block will navigate to sellOrder/index instead of stalling.
+    const _navOrderId = new URLSearchParams(window.location.search).get("order_id") || "";
+    if (_navOrderId) {
+      await chrome.storage.local.set({ pendingNavigateToList: _navOrderId });
+      log("UPLOAD", `[D2c] 🔖 Set pendingNavigateToList=${_navOrderId} (survives reload).`);
+    }
     confirmBtn.click();
     await sleep(2000);
 
@@ -467,6 +475,7 @@
     }
 
     log("UPLOAD", "[D4] ✅ Confirm Delivered flow complete — returning to order list.");
+    await chrome.storage.local.remove(["pendingNavigateToList"]);
     window.location.href = "https://www.z2u.com/sellOrder/index";
     return true;
   }
@@ -858,23 +867,6 @@
         continue;
       }
 
-      // ── Upload backoff check ────────────────────────────────────────────────
-      // If the bridge upload failed recently (< 5 min), skip this order to
-      // prevent the tight loop: detail → bridge fails → list → re-detect → repeat.
-      {
-        const backoffKey  = `uploadBackoff_${orderId}`;
-        const backoffData = await new Promise((r) => chrome.storage.local.get([backoffKey], r));
-        const backoffTime = backoffData[backoffKey] || 0;
-        if (backoffTime && Date.now() - backoffTime < 5 * 60 * 1000) {
-          const elapsed   = Math.floor((Date.now() - backoffTime) / 1000);
-          const remaining = Math.ceil((5 * 60 * 1000 - (Date.now() - backoffTime)) / 1000);
-          warn("LIST", `Order ${orderId} bridge failed ${elapsed}s ago — cooling off (${remaining}s left). Fix bridge then it retries automatically.`);
-          continue;
-        }
-        // Past the window — clear the stale key.
-        if (backoffTime) chrome.storage.local.remove([backoffKey]).catch(() => {});
-      }
-
       if (!detailHref) {
         warn("LIST", `No Order Detail link for ${orderId}.`);
         continue;
@@ -908,28 +900,6 @@
     // Give page time to fully render
     log("DETAIL", "Waiting 1s for page to fully render…");
     await sleep(1000);
-
-    // ── Fake 404 guard ──────────────────────────────────────────────────────
-    // Z2U occasionally returns a transient 404 on order detail pages.
-    // Refresh once (tracked via sessionStorage so we never loop infinitely).
-    {
-      const refreshKey = `z2u_404_${orderId}`;
-      const pageBody   = document.body.textContent || "";
-      const hasContent = document.querySelector(
-        ".sold-details, [class*='orderDetail'], [class*='soldDetail'], .order-status, h1.page-title"
-      );
-      if (!hasContent && /404|page not found|not exist|该页面不存在/i.test(pageBody)) {
-        if (!sessionStorage.getItem(refreshKey)) {
-          warn("DETAIL", "⚠️ Fake 404 detected — refreshing once in 2s…");
-          sessionStorage.setItem(refreshKey, "1");
-          await sleep(2000);
-          window.location.reload();
-          return;
-        } else {
-          warn("DETAIL", "⚠️ 404 persists after one refresh — giving up.");
-        }
-      }
-    }
 
     // ── Prepare-only mode (unmapped orders) ──────────────────────────────────
     // Set by the list page when an unmapped NEW ORDER is detected.
@@ -1003,6 +973,20 @@
       log("DETAIL", `[0] ↩ Resuming confirmDeliveredFlow for ${orderId} (qty=${qty}) after page reload.`);
       await chrome.storage.local.remove(["pendingConfirmOrderId", "pendingConfirmQty"]);
       await confirmDeliveredFlow(qty);
+      return;
+    }
+
+    // ── [0c] Navigate to list after Confirm Delivered caused a page reload ────
+    // When clicking "Confirm Delivered" triggers a Z2U page reload, the async
+    // chain is killed before [D4] can run. pendingNavigateToList was set just
+    // before the click and survives the reload — navigate back to the order list.
+    const { pendingNavigateToList } = await new Promise((r) =>
+      chrome.storage.local.get(["pendingNavigateToList"], r)
+    );
+    if (pendingNavigateToList && pendingNavigateToList === orderId) {
+      log("DETAIL", `[0c] ↩ Confirm Delivered completed for ${orderId} — navigating to order list.`);
+      await chrome.storage.local.remove(["pendingNavigateToList"]);
+      window.location.href = "https://www.z2u.com/sellOrder/index";
       return;
     }
 
@@ -1125,38 +1109,7 @@
     const alreadyDone = await bgIsProcessed(orderId);
     log("DETAIL", `[4] bgIsProcessed → ${alreadyDone}`);
     if (alreadyDone) {
-      // The order was uploaded in a previous step.  Check current page status so
-      // we can resume at exactly the right point instead of silently giving up.
-      const badgeNow        = statusBadge?.textContent?.trim().toUpperCase() || "";
-      const isWaitConfirm   = badgeNow.includes("WAIT FOR CONFIRM") || badgeNow.includes("WAITING FOR CONFIRM");
-      const isDelivering    = badgeNow.includes("DELIVERING");
-
-      if (isWaitConfirm) {
-        // Upload done + delivery confirmed by Z2U — nothing left to do.
-        log("DETAIL", `[4] ✅ Badge="${badgeNow}" → delivery already confirmed — navigating to order list.`);
-        window.location.href = "https://www.z2u.com/sellOrder/index";
-        return;
-      }
-
-      if (isDelivering) {
-        // Upload succeeded but "Confirm Delivered" click didn't complete (page reloaded).
-        log("DETAIL", `[4] 🟡 Badge="${badgeNow}" → upload done but delivery not yet confirmed — resuming.`);
-        // Quick quantity read directly from the page
-        let qty = 1;
-        for (const n of Array.from(document.querySelectorAll("*"))) {
-          if (n.childElementCount > 0) continue;
-          if (/^quantity$/i.test(n.textContent?.trim() || "")) {
-            const nxt = n.nextElementSibling || n.parentElement?.nextElementSibling;
-            const v   = parseInt(nxt?.textContent?.trim() || "0", 10);
-            if (v > 0) { qty = v; break; }
-          }
-        }
-        log("DETAIL", `[4] Resuming confirmDeliveredFlow with qty=${qty}.`);
-        await confirmDeliveredFlow(qty);
-        return;
-      }
-
-      log("DETAIL", `[4] Order ${orderId} already completed (badge="${badgeNow}"). Use popup → Clear History to retry.`);
+      log("DETAIL", `[4] Order ${orderId} already completed. Use popup → Clear History to retry.`);
       return;
     }
     sessionDone.add(orderId);
@@ -1340,15 +1293,8 @@
       if (uploaded) {
         await bgMarkProcessed(orderId);
         log("DETAIL", `[11] ✅ Order ${orderId} fully completed and marked processed.`);
-        // Clear any stale backoff flag from a previous failed attempt.
-        chrome.storage.local.remove([`uploadBackoff_${orderId}`]).catch(() => {});
       } else {
         warn("DETAIL", "[11] Upload/confirm step did not complete.");
-        // Set a 5-minute backoff so the list scanner won't immediately re-queue
-        // this order while the bridge is unavailable — prevents the tight loop
-        // of: navigate to detail → bridge fails → navigate to list → repeat.
-        await chrome.storage.local.set({ [`uploadBackoff_${orderId}`]: Date.now() });
-        warn("DETAIL", `[11] ⏸ Backoff set for ${orderId} — will retry in 5 min.`);
       }
 
     } catch (e) {
