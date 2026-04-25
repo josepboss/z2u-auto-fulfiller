@@ -1,5 +1,5 @@
 const CONFIG = {
-  SERVER_URL: "http://localhost:3000",
+  SERVER_URL: "https://z2.itspanel.com",
 
   MIN_REFRESH_SECONDS: 45,
   MAX_REFRESH_SECONDS: 90,
