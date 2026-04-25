@@ -907,29 +907,44 @@
 
       if (prepBtn) {
         log("DETAIL", `[PREPARE-ONLY] Clicking "Preparing" button…`);
-        // If it's an anchor tag, prevent it from navigating away from the page
-        // before we can redirect to sellOrder/index ourselves.
+        // Store return-to-list flag BEFORE clicking.
+        // If clicking Prepare causes Z2U to reload the page, the current async
+        // chain is killed. The new script checks pendingReturnToList at [0b]
+        // and navigates back to sellOrder/index, keeping the pipeline alive.
+        await chrome.storage.local.set({ pendingReturnToList: orderId, pendingReturnTitle: unmappedTitle || "" });
+        // If it's an anchor tag, prevent it from navigating away from the page.
         if (prepBtn.tagName === "A") {
           prepBtn.addEventListener("click", (e) => e.preventDefault(), { once: true });
         }
         prepBtn.click();
         log("DETAIL", `[PREPARE-ONLY] ✅ Clicked.`);
-        // Wait for any AJAX triggered by the click to fire before navigating
-        await sleep(1000);
+        await sleep(1500);
       } else {
-        warn("DETAIL", `[PREPARE-ONLY] "Preparing" button not found — may already be past NEW ORDER.`);
-        dumpButtons("PREPARE-ONLY-STUCK");
+        warn("DETAIL", `[PREPARE-ONLY] "Preparing" button not found — already past NEW ORDER? Returning to list anyway.`);
+        // Order is already past NEW ORDER; still need to go back to the list.
+        await chrome.storage.local.set({ pendingReturnToList: orderId, pendingReturnTitle: unmappedTitle || "" });
       }
 
-      // Mark as "prepare-only" (NOT fully-processed) so the list page skips it
-      // on future scans without blocking it if a mapping is added later.
+      // Mark as "prepare-only" and record analytics, then navigate back.
       chrome.runtime.sendMessage({ type: "MARK_PREPARED_ONLY", orderId }).catch(() => {});
-
-      // Record analytics for unmapped orders (title stored from list page)
       recordAnalytics(orderId, unmappedTitle || "", 1);
-
-      // Navigate back to the list to keep the pipeline running
+      await chrome.storage.local.remove(["pendingReturnToList", "pendingReturnTitle"]);
       log("DETAIL", `[PREPARE-ONLY] Navigating back to order list.`);
+      window.location.href = "https://www.z2u.com/sellOrder/index";
+      return;
+    }
+
+    // ── [0b] Return to list after Prepare click caused a page reload ───────────
+    // If clicking "Preparing" reloaded the page before window.location.href ran,
+    // pendingReturnToList is still in storage. Navigate back immediately.
+    const { pendingReturnToList, pendingReturnTitle } = await new Promise((r) =>
+      chrome.storage.local.get(["pendingReturnToList", "pendingReturnTitle"], r)
+    );
+    if (pendingReturnToList && pendingReturnToList === orderId) {
+      log("DETAIL", `[0b] ↩ Prepare already clicked for ${orderId} — returning to list.`);
+      await chrome.storage.local.remove(["pendingReturnToList", "pendingReturnTitle"]);
+      chrome.runtime.sendMessage({ type: "MARK_PREPARED_ONLY", orderId }).catch(() => {});
+      recordAnalytics(orderId, pendingReturnTitle || "", 1);
       window.location.href = "https://www.z2u.com/sellOrder/index";
       return;
     }
