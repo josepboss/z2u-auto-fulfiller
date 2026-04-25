@@ -167,7 +167,7 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
     with sync_playwright() as pw:
         # ── Connect to Chrome ─────────────────────────────────────────────
         try:
-            browser = pw.chromium.connect_over_cdp(CDP_URL, timeout=6000)
+            browser = pw.chromium.connect_over_cdp(CDP_URL, timeout=15000)
         except Exception as e:
             return {
                 "ok": False,
@@ -430,7 +430,7 @@ def do_chat_reply(username: str, message: str) -> dict:
     """
     with sync_playwright() as pw:
         try:
-            browser = pw.chromium.connect_over_cdp(CDP_URL, timeout=6000)
+            browser = pw.chromium.connect_over_cdp(CDP_URL, timeout=15000)
         except Exception as e:
             return {
                 "ok": False,
