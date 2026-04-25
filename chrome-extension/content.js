@@ -466,7 +466,8 @@
       if (/error|fail|invalid|reject/i.test(txt)) return false;
     }
 
-    log("UPLOAD", "[D4] ✅ Confirm Delivered flow complete.");
+    log("UPLOAD", "[D4] ✅ Confirm Delivered flow complete — returning to order list.");
+    window.location.href = "https://www.z2u.com/sellOrder/index";
     return true;
   }
 
