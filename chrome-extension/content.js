@@ -858,6 +858,23 @@
         continue;
       }
 
+      // ── Upload backoff check ────────────────────────────────────────────────
+      // If the bridge upload failed recently (< 5 min), skip this order to
+      // prevent the tight loop: detail → bridge fails → list → re-detect → repeat.
+      {
+        const backoffKey  = `uploadBackoff_${orderId}`;
+        const backoffData = await new Promise((r) => chrome.storage.local.get([backoffKey], r));
+        const backoffTime = backoffData[backoffKey] || 0;
+        if (backoffTime && Date.now() - backoffTime < 5 * 60 * 1000) {
+          const elapsed   = Math.floor((Date.now() - backoffTime) / 1000);
+          const remaining = Math.ceil((5 * 60 * 1000 - (Date.now() - backoffTime)) / 1000);
+          warn("LIST", `Order ${orderId} bridge failed ${elapsed}s ago — cooling off (${remaining}s left). Fix bridge then it retries automatically.`);
+          continue;
+        }
+        // Past the window — clear the stale key.
+        if (backoffTime) chrome.storage.local.remove([backoffKey]).catch(() => {});
+      }
+
       if (!detailHref) {
         warn("LIST", `No Order Detail link for ${orderId}.`);
         continue;
@@ -1323,8 +1340,15 @@
       if (uploaded) {
         await bgMarkProcessed(orderId);
         log("DETAIL", `[11] ✅ Order ${orderId} fully completed and marked processed.`);
+        // Clear any stale backoff flag from a previous failed attempt.
+        chrome.storage.local.remove([`uploadBackoff_${orderId}`]).catch(() => {});
       } else {
         warn("DETAIL", "[11] Upload/confirm step did not complete.");
+        // Set a 5-minute backoff so the list scanner won't immediately re-queue
+        // this order while the bridge is unavailable — prevents the tight loop
+        // of: navigate to detail → bridge fails → navigate to list → repeat.
+        await chrome.storage.local.set({ [`uploadBackoff_${orderId}`]: Date.now() });
+        warn("DETAIL", `[11] ⏸ Backoff set for ${orderId} — will retry in 5 min.`);
       }
 
     } catch (e) {
