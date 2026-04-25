@@ -397,6 +397,14 @@
     }
 
     // ── [D2c] Click Confirm Delivered ─────────────────────────────────────
+    // Set a persistent flag BEFORE the click resolves — if Z2U reloads the
+    // page (as it does for Preparing), this flag survives and the new content
+    // script's [0c] block will navigate to sellOrder/index instead of stalling.
+    const _navOrderId = new URLSearchParams(window.location.search).get("order_id") || "";
+    if (_navOrderId) {
+      await chrome.storage.local.set({ pendingNavigateToList: _navOrderId });
+      log("UPLOAD", `[D2c] 🔖 Set pendingNavigateToList=${_navOrderId} (survives reload).`);
+    }
     confirmBtn.click();
     await sleep(2000);
 
@@ -467,6 +475,7 @@
     }
 
     log("UPLOAD", "[D4] ✅ Confirm Delivered flow complete — returning to order list.");
+    await chrome.storage.local.remove(["pendingNavigateToList"]);
     window.location.href = "https://www.z2u.com/sellOrder/index";
     return true;
   }
@@ -964,6 +973,20 @@
       log("DETAIL", `[0] ↩ Resuming confirmDeliveredFlow for ${orderId} (qty=${qty}) after page reload.`);
       await chrome.storage.local.remove(["pendingConfirmOrderId", "pendingConfirmQty"]);
       await confirmDeliveredFlow(qty);
+      return;
+    }
+
+    // ── [0c] Navigate to list after Confirm Delivered caused a page reload ────
+    // When clicking "Confirm Delivered" triggers a Z2U page reload, the async
+    // chain is killed before [D4] can run. pendingNavigateToList was set just
+    // before the click and survives the reload — navigate back to the order list.
+    const { pendingNavigateToList } = await new Promise((r) =>
+      chrome.storage.local.get(["pendingNavigateToList"], r)
+    );
+    if (pendingNavigateToList && pendingNavigateToList === orderId) {
+      log("DETAIL", `[0c] ↩ Confirm Delivered completed for ${orderId} — navigating to order list.`);
+      await chrome.storage.local.remove(["pendingNavigateToList"]);
+      window.location.href = "https://www.z2u.com/sellOrder/index";
       return;
     }
 
