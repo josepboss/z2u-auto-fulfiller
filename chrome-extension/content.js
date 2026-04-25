@@ -892,6 +892,28 @@
     log("DETAIL", "Waiting 1s for page to fully render…");
     await sleep(1000);
 
+    // ── Fake 404 guard ──────────────────────────────────────────────────────
+    // Z2U occasionally returns a transient 404 on order detail pages.
+    // Refresh once (tracked via sessionStorage so we never loop infinitely).
+    {
+      const refreshKey = `z2u_404_${orderId}`;
+      const pageBody   = document.body.textContent || "";
+      const hasContent = document.querySelector(
+        ".sold-details, [class*='orderDetail'], [class*='soldDetail'], .order-status, h1.page-title"
+      );
+      if (!hasContent && /404|page not found|not exist|该页面不存在/i.test(pageBody)) {
+        if (!sessionStorage.getItem(refreshKey)) {
+          warn("DETAIL", "⚠️ Fake 404 detected — refreshing once in 2s…");
+          sessionStorage.setItem(refreshKey, "1");
+          await sleep(2000);
+          window.location.reload();
+          return;
+        } else {
+          warn("DETAIL", "⚠️ 404 persists after one refresh — giving up.");
+        }
+      }
+    }
+
     // ── Prepare-only mode (unmapped orders) ──────────────────────────────────
     // Set by the list page when an unmapped NEW ORDER is detected.
     // We just click "Preparing" and go back — no upload, no confirm.
@@ -1086,7 +1108,38 @@
     const alreadyDone = await bgIsProcessed(orderId);
     log("DETAIL", `[4] bgIsProcessed → ${alreadyDone}`);
     if (alreadyDone) {
-      log("DETAIL", `[4] Order ${orderId} already completed. Use popup → Clear History to retry.`);
+      // The order was uploaded in a previous step.  Check current page status so
+      // we can resume at exactly the right point instead of silently giving up.
+      const badgeNow        = statusBadge?.textContent?.trim().toUpperCase() || "";
+      const isWaitConfirm   = badgeNow.includes("WAIT FOR CONFIRM") || badgeNow.includes("WAITING FOR CONFIRM");
+      const isDelivering    = badgeNow.includes("DELIVERING");
+
+      if (isWaitConfirm) {
+        // Upload done + delivery confirmed by Z2U — nothing left to do.
+        log("DETAIL", `[4] ✅ Badge="${badgeNow}" → delivery already confirmed — navigating to order list.`);
+        window.location.href = "https://www.z2u.com/sellOrder/index";
+        return;
+      }
+
+      if (isDelivering) {
+        // Upload succeeded but "Confirm Delivered" click didn't complete (page reloaded).
+        log("DETAIL", `[4] 🟡 Badge="${badgeNow}" → upload done but delivery not yet confirmed — resuming.`);
+        // Quick quantity read directly from the page
+        let qty = 1;
+        for (const n of Array.from(document.querySelectorAll("*"))) {
+          if (n.childElementCount > 0) continue;
+          if (/^quantity$/i.test(n.textContent?.trim() || "")) {
+            const nxt = n.nextElementSibling || n.parentElement?.nextElementSibling;
+            const v   = parseInt(nxt?.textContent?.trim() || "0", 10);
+            if (v > 0) { qty = v; break; }
+          }
+        }
+        log("DETAIL", `[4] Resuming confirmDeliveredFlow with qty=${qty}.`);
+        await confirmDeliveredFlow(qty);
+        return;
+      }
+
+      log("DETAIL", `[4] Order ${orderId} already completed (badge="${badgeNow}"). Use popup → Clear History to retry.`);
       return;
     }
     sessionDone.add(orderId);
