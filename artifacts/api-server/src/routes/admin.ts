@@ -29,12 +29,19 @@ function saveAnalytics(records: AnalyticsRecord[]): void {
   fs.writeFileSync(ANALYTICS_FILE, JSON.stringify(records, null, 2));
 }
 
-function loadMappings(): Record<string, string> {
+type DeliveryMethod = "file" | "direct" | "chat";
+interface MappingEntry {
+  serviceId: string;
+  columnMap?: Record<string, string>;
+  deliveryMethod?: DeliveryMethod;
+}
+
+function loadMappings(): Record<string, string | MappingEntry> {
   if (!fs.existsSync(MAPPINGS_FILE)) return {};
   return JSON.parse(fs.readFileSync(MAPPINGS_FILE, "utf-8"));
 }
 
-function saveMappings(data: Record<string, string>) {
+function saveMappings(data: Record<string, string | MappingEntry>) {
   fs.writeFileSync(MAPPINGS_FILE, JSON.stringify(data, null, 2));
 }
 
@@ -185,10 +192,10 @@ async function loadMappings() {
     tbody.innerHTML = '<tr><td colspan="3" style="color:#64748b">No mappings yet.</td></tr>';
     return;
   }
-  tbody.innerHTML = entries.map(([title, id]) => \`
+  tbody.innerHTML = entries.map(([title, conf]) => \`
     <tr>
       <td>\${title}</td>
-      <td><span class="tag">\${id}</span></td>
+      <td><span class="tag">\${(typeof conf === "string" ? conf : conf.serviceId) || ""}</span></td>
       <td><button class="danger" onclick="deleteMapping('\${encodeURIComponent(title)}')">Delete</button></td>
     </tr>
   \`).join('');
@@ -400,13 +407,22 @@ router.get("/admin/mappings", (_req, res) => {
 });
 
 router.post("/admin/mappings", (req, res) => {
-  const { title, serviceId } = req.body as { title: string; serviceId: string };
+  const { title, serviceId, columnMap, deliveryMethod } = req.body as {
+    title: string;
+    serviceId: string;
+    columnMap?: Record<string, string>;
+    deliveryMethod?: DeliveryMethod;
+  };
   if (!title || !serviceId) {
     res.status(400).json({ error: "title and serviceId are required" });
     return;
   }
   const mappings = loadMappings();
-  mappings[title] = String(serviceId);
+  mappings[title] = {
+    serviceId: String(serviceId),
+    columnMap: columnMap && Object.keys(columnMap).length ? columnMap : { email: "A", password: "B" },
+    deliveryMethod: deliveryMethod || "file",
+  };
   saveMappings(mappings);
   res.json({ ok: true });
 });
