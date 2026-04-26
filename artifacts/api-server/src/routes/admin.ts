@@ -9,6 +9,7 @@ const __dirname = path.dirname(__filename);
 const MAPPINGS_FILE   = path.resolve(__dirname, "../../mappings.json");
 const CACHE_DIR       = path.resolve(__dirname, "../../order-cache");
 const ANALYTICS_FILE  = path.resolve(__dirname, "../../analytics.json");
+const HEAL_CONFIG_FILE = path.resolve(__dirname, "../../heal-config.json");
 
 interface AnalyticsRecord {
   orderId:    string;
@@ -17,6 +18,11 @@ interface AnalyticsRecord {
   amount:     number | null;
   date:       string;
   recordedAt: string;
+}
+
+interface HealConfig {
+  openrouterApiKey?: string;
+  healModel?: string;
 }
 
 function loadAnalytics(): AnalyticsRecord[] {
@@ -29,12 +35,29 @@ function saveAnalytics(records: AnalyticsRecord[]): void {
   fs.writeFileSync(ANALYTICS_FILE, JSON.stringify(records, null, 2));
 }
 
-function loadMappings(): Record<string, string> {
+function loadHealConfig(): HealConfig {
+  if (!fs.existsSync(HEAL_CONFIG_FILE)) return {};
+  try { return JSON.parse(fs.readFileSync(HEAL_CONFIG_FILE, "utf-8")); }
+  catch { return {}; }
+}
+
+function saveHealConfig(config: HealConfig): void {
+  fs.writeFileSync(HEAL_CONFIG_FILE, JSON.stringify(config, null, 2));
+}
+
+type DeliveryMethod = "file" | "direct" | "chat";
+interface MappingEntry {
+  serviceId: string;
+  columnMap?: Record<string, string>;
+  deliveryMethod?: DeliveryMethod;
+}
+
+function loadMappings(): Record<string, string | MappingEntry> {
   if (!fs.existsSync(MAPPINGS_FILE)) return {};
   return JSON.parse(fs.readFileSync(MAPPINGS_FILE, "utf-8"));
 }
 
-function saveMappings(data: Record<string, string>) {
+function saveMappings(data: Record<string, string | MappingEntry>) {
   fs.writeFileSync(MAPPINGS_FILE, JSON.stringify(data, null, 2));
 }
 
@@ -123,20 +146,39 @@ const html = `<!DOCTYPE html>
 
 <div class="card">
   <h2>Add / Update Mapping</h2>
+  <p style="color:#94a3b8;font-size:.8rem;margin-bottom:.5rem">Universal controls: select how delivery runs and where each account field is written in the Z2U template.</p>
   <label>Z2U Offer Title (exact match)</label>
   <input id="title" placeholder="e.g. FIFA 25 PS4 Coins 1M" />
   <label>Lfollowers Product</label>
   <select id="serviceSelect"><option value="">-- loading products... --</option></select>
   <label>Or enter Product ID manually</label>
   <input id="serviceId" placeholder="e.g. 1234" />
+  <label>Delivery Method</label>
+  <select id="deliveryMethod">
+    <option value="file">File</option>
+    <option value="direct">Direct</option>
+    <option value="chat">Chat</option>
+  </select>
+  <label>Column Map (JSON)</label>
+  <input id="columnMap" placeholder='{"username":"B","password":"C","email":"H","emailPassword":"I"}' />
   <button onclick="addMapping()">Save Mapping</button>
+</div>
+
+<div class="card">
+  <h2>🩹 Healer Settings</h2>
+  <p style="color:#94a3b8;font-size:.8rem;margin-bottom:.5rem">Configure OpenRouter credentials used by <code>/api/heal</code> when bridge selector healing is needed.</p>
+  <label>OpenRouter API Key</label>
+  <input id="healApiKey" placeholder="sk-or-v1-..." autocomplete="off" />
+  <label>Model</label>
+  <input id="healModel" placeholder="google/gemini-1.5-flash" />
+  <button onclick="saveHealConfig()">Save Healer Config</button>
 </div>
 
 <div class="card">
   <h2>Current Mappings</h2>
   <table id="mappingsTable">
-    <thead><tr><th>Z2U Title</th><th>Product ID</th><th>Action</th></tr></thead>
-    <tbody id="mappingsBody"><tr><td colspan="3" style="color:#64748b">Loading...</td></tr></tbody>
+    <thead><tr><th>Z2U Title</th><th>Product ID</th><th>Delivery</th><th>Column Map</th><th>Action</th></tr></thead>
+    <tbody id="mappingsBody"><tr><td colspan="5" style="color:#64748b">Loading...</td></tr></tbody>
   </table>
 </div>
 
@@ -158,6 +200,8 @@ function showMsg(text, ok) {
   el.style.display = 'block';
   setTimeout(() => el.style.display = 'none', 3500);
 }
+
+const DEFAULT_COLUMN_MAP = { email: "A", password: "B" };
 
 async function loadServices() {
   try {
@@ -182,13 +226,15 @@ async function loadMappings() {
   const tbody = document.getElementById('mappingsBody');
   const entries = Object.entries(data);
   if (!entries.length) {
-    tbody.innerHTML = '<tr><td colspan="3" style="color:#64748b">No mappings yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="color:#64748b">No mappings yet.</td></tr>';
     return;
   }
-  tbody.innerHTML = entries.map(([title, id]) => \`
+  tbody.innerHTML = entries.map(([title, conf]) => \`
     <tr>
       <td>\${title}</td>
-      <td><span class="tag">\${id}</span></td>
+      <td><span class="tag">\${(typeof conf === "string" ? conf : conf.serviceId) || ""}</span></td>
+      <td><span class="tag">\${(typeof conf === "string" ? "file" : (conf.deliveryMethod || "file"))}</span></td>
+      <td style="max-width:260px;white-space:pre-wrap;word-break:break-word;color:#94a3b8">\${typeof conf === "string" ? '{"email":"A","password":"B"}' : JSON.stringify(conf.columnMap || { email: "A", password: "B" })}</td>
       <td><button class="danger" onclick="deleteMapping('\${encodeURIComponent(title)}')">Delete</button></td>
     </tr>
   \`).join('');
@@ -222,14 +268,64 @@ async function addMapping() {
   const title = document.getElementById('title').value.trim();
   const selVal = document.getElementById('serviceSelect').value;
   const manualId = document.getElementById('serviceId').value.trim();
+  const deliveryMethod = document.getElementById('deliveryMethod').value;
+  const columnMapText = document.getElementById('columnMap').value.trim();
   const serviceId = manualId || selVal;
   if (!title || !serviceId) { showMsg('Title and Service ID are required.', false); return; }
+  let columnMap = DEFAULT_COLUMN_MAP;
+  if (columnMapText) {
+    try {
+      const parsed = JSON.parse(columnMapText);
+      if (typeof parsed !== "object" || Array.isArray(parsed) || !parsed) {
+        showMsg('Column Map must be a JSON object.', false); return;
+      }
+      columnMap = parsed;
+    } catch (e) {
+      showMsg('Invalid Column Map JSON.', false); return;
+    }
+  }
   const res = await fetch('/api/admin/mappings', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ title, serviceId })
+    body: JSON.stringify({ title, serviceId, deliveryMethod, columnMap })
   });
-  if (res.ok) { showMsg('Mapping saved!', true); loadMappings(); }
+  if (res.ok) {
+    showMsg('Mapping saved!', true);
+    document.getElementById('columnMap').value = JSON.stringify(DEFAULT_COLUMN_MAP);
+    loadMappings();
+  }
   else { showMsg('Failed to save mapping.', false); }
+}
+
+async function loadHealConfig() {
+  try {
+    const res = await fetch('/api/admin/heal-config');
+    const data = await res.json();
+    document.getElementById('healModel').value = data.healModel || 'google/gemini-1.5-flash';
+    document.getElementById('healApiKey').placeholder = data.hasApiKey
+      ? 'API key already saved — enter new key to replace'
+      : 'sk-or-v1-...';
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function saveHealConfig() {
+  const healModel = document.getElementById('healModel').value.trim();
+  const openrouterApiKey = document.getElementById('healApiKey').value.trim();
+  const payload = { healModel };
+  if (openrouterApiKey) payload.openrouterApiKey = openrouterApiKey;
+
+  const res = await fetch('/api/admin/heal-config', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload),
+  });
+  if (res.ok) {
+    showMsg('Healer config saved!', true);
+    document.getElementById('healApiKey').value = '';
+    loadHealConfig();
+  } else {
+    showMsg('Failed to save healer config.', false);
+  }
 }
 
 async function deleteMapping(encodedTitle) {
@@ -384,6 +480,8 @@ loadMappings();
 loadOrders();
 loadAnalytics();
 loadRecords();
+loadHealConfig();
+document.getElementById('columnMap').value = JSON.stringify(DEFAULT_COLUMN_MAP);
 setInterval(loadAnalytics, 60000);
 setInterval(loadRecords, 60000);
 </script>
@@ -399,14 +497,42 @@ router.get("/admin/mappings", (_req, res) => {
   res.json(loadMappings());
 });
 
+router.get("/admin/heal-config", (_req, res) => {
+  const conf = loadHealConfig();
+  res.json({
+    hasApiKey: Boolean(conf.openrouterApiKey),
+    healModel: conf.healModel || "google/gemini-1.5-flash",
+  });
+});
+
+router.post("/admin/heal-config", (req, res) => {
+  const body = req.body as HealConfig;
+  const prev = loadHealConfig();
+  const next: HealConfig = {
+    openrouterApiKey: body.openrouterApiKey?.trim() || prev.openrouterApiKey || "",
+    healModel: body.healModel?.trim() || prev.healModel || "google/gemini-1.5-flash",
+  };
+  saveHealConfig(next);
+  res.json({ ok: true, hasApiKey: Boolean(next.openrouterApiKey), healModel: next.healModel });
+});
+
 router.post("/admin/mappings", (req, res) => {
-  const { title, serviceId } = req.body as { title: string; serviceId: string };
+  const { title, serviceId, columnMap, deliveryMethod } = req.body as {
+    title: string;
+    serviceId: string;
+    columnMap?: Record<string, string>;
+    deliveryMethod?: DeliveryMethod;
+  };
   if (!title || !serviceId) {
     res.status(400).json({ error: "title and serviceId are required" });
     return;
   }
   const mappings = loadMappings();
-  mappings[title] = String(serviceId);
+  mappings[title] = {
+    serviceId: String(serviceId),
+    columnMap: columnMap && Object.keys(columnMap).length ? columnMap : { email: "A", password: "B" },
+    deliveryMethod: deliveryMethod || "file",
+  };
   saveMappings(mappings);
   res.json({ ok: true });
 });
