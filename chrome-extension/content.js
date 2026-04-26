@@ -740,6 +740,77 @@
     return false;
   }
 
+  function normalizeMappingEntry(raw) {
+    if (!raw) return null;
+    if (typeof raw === "string") {
+      return {
+        serviceId: raw,
+        deliveryMethod: "file",
+        columnMap: { email: "A", password: "B" },
+      };
+    }
+    return {
+      serviceId: raw.serviceId || "",
+      deliveryMethod: raw.deliveryMethod || "file",
+      columnMap: raw.columnMap || { email: "A", password: "B" },
+    };
+  }
+
+  async function prepareOrderPayload(orderId, title, quantity) {
+    const result = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ type: "PREPARE_ORDER", data: { orderId, title, quantity } }, (r) => {
+        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+        if (!r?.ok) return reject(new Error(r?.error || "prepare-order failed"));
+        resolve(r.result);
+      });
+    });
+    return result;
+  }
+
+  function formatDirectPayload(accounts) {
+    return (accounts || []).map((a) => [a.user, a.pass, a.email, a.email_pass].filter(Boolean).join(" | ")).join("\n");
+  }
+
+  async function runDirectDelivery(accounts, quantity) {
+    const text = formatDirectPayload(accounts.slice(0, quantity));
+    const input = document.querySelector("textarea, input[type='text']:not([readonly]), [contenteditable='true']");
+    if (!input) {
+      warn("DIRECT", "No writable direct-delivery field found.");
+      return false;
+    }
+    if (input.matches("[contenteditable='true']")) {
+      input.focus();
+      input.textContent = text;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      if (setter && input.tagName === "INPUT") setter.call(input, text);
+      else input.value = text;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return await confirmDeliveredFlow(quantity);
+  }
+
+  async function runChatDelivery(formattedCredentials, orderId, quantity) {
+    const buyerEl = Array.from(document.querySelectorAll("*")).find((el) => /buyer|username|contact/i.test(el.textContent || ""));
+    const buyerText = buyerEl?.nextElementSibling?.textContent?.trim() || "";
+    if (!buyerText) {
+      warn("CHAT", "Buyer username not found on page.");
+      return false;
+    }
+    const resp = await fetch("http://localhost:5000/chat-reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: buyerText, message: formattedCredentials, orderId }),
+    });
+    if (!resp.ok) {
+      warn("CHAT", `Bridge chat reply failed: HTTP ${resp.status}`);
+      return false;
+    }
+    return await confirmDeliveredFlow(quantity);
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   //  LIST PAGE  (z2u.com/sellOrder/index)
   // ══════════════════════════════════════════════════════════════════════════
@@ -1099,7 +1170,12 @@
       }
     }
 
-    log("DETAIL", `[3] ✅ Mapping found → productId="${mappings[resolvedTitle]}"`);
+    const mappingEntry = normalizeMappingEntry(mappings[resolvedTitle]);
+    if (!mappingEntry?.serviceId) {
+      err("DETAIL", `[3] Mapping found but invalid for "${resolvedTitle}"`);
+      return;
+    }
+    log("DETAIL", `[3] ✅ Mapping found → productId="${mappingEntry.serviceId}" deliveryMethod="${mappingEntry.deliveryMethod}"`);
 
     // ── [4] Dedup ─────────────────────────────────────────────────────────────
     if (sessionDone.has(orderId)) {
@@ -1252,6 +1328,28 @@
         }
       } else {
         log("DETAIL", "[6-8] Template link already on page — order is in Delivering state. Jumping to download.");
+      }
+
+      if ((mappingEntry.deliveryMethod || "file") === "direct") {
+        log("DETAIL", "[9] deliveryMethod=direct — preparing payload (no XLSX upload).");
+        const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
+        const ok = await runDirectDelivery(prepared.accounts || [], quantity);
+        if (ok) {
+          await bgMarkProcessed(orderId);
+          log("DETAIL", `[11] ✅ Direct delivery completed for ${orderId}.`);
+        }
+        return;
+      }
+
+      if ((mappingEntry.deliveryMethod || "file") === "chat") {
+        log("DETAIL", "[9] deliveryMethod=chat — preparing payload + bridge chat send.");
+        const prepared = await prepareOrderPayload(orderId, resolvedTitle, quantity);
+        const ok = await runChatDelivery(prepared.formattedCredentials || "", orderId, quantity);
+        if (ok) {
+          await bgMarkProcessed(orderId);
+          log("DETAIL", `[11] ✅ Chat delivery completed for ${orderId}.`);
+        }
+        return;
       }
 
       // ── [9] Template download ──────────────────────────────────────────────

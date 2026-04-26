@@ -3,6 +3,7 @@ import healthRouter from "./health.js";
 import adminRouter from "./admin.js";
 import lfollowersRouter from "./lfollowers.js";
 import processOrderRouter from "./processOrder.js";
+import healRouter from "./heal.js";
 
 const router: IRouter = Router();
 
@@ -10,5 +11,6 @@ router.use(healthRouter);
 router.use(adminRouter);
 router.use(lfollowersRouter);
 router.use(processOrderRouter);
+router.use(healRouter);
 
 export default router;

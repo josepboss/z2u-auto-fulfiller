@@ -189,7 +189,7 @@ async function verifyTgBot(token, chatId) {
 document.addEventListener("DOMContentLoaded", async () => {
   const data = await chrome.storage.local.get(["serverUrl", "z2uUploadEndpoint", "z2uFileField", "tgToken", "tgChatId"]);
 
-  const url = data.serverUrl || "http://localhost:3000";
+  const url = data.serverUrl || "https://z2.itspanel.com";
   document.getElementById("serverUrl").value = url;
   document.getElementById("adminLink").href = `${url}/api/admin`;
   updateStatus(url);
@@ -209,7 +209,7 @@ document.getElementById("saveBtn").addEventListener("click", async () => {
   const uploadUrl = document.getElementById("uploadUrl").value.trim();
   const fileField = document.getElementById("fileField").value.trim() || "file";
 
-  const toSave = { serverUrl: url || "http://localhost:3000", z2uFileField: fileField };
+  const toSave = { serverUrl: url || "https://z2.itspanel.com", z2uFileField: fileField };
 
   if (uploadUrl) {
     toSave.z2uUploadEndpoint = {

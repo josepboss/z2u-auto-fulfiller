@@ -29,12 +29,19 @@ function saveAnalytics(records: AnalyticsRecord[]): void {
   fs.writeFileSync(ANALYTICS_FILE, JSON.stringify(records, null, 2));
 }
 
-function loadMappings(): Record<string, string> {
+type DeliveryMethod = "file" | "direct" | "chat";
+interface MappingEntry {
+  serviceId: string;
+  columnMap?: Record<string, string>;
+  deliveryMethod?: DeliveryMethod;
+}
+
+function loadMappings(): Record<string, string | MappingEntry> {
   if (!fs.existsSync(MAPPINGS_FILE)) return {};
   return JSON.parse(fs.readFileSync(MAPPINGS_FILE, "utf-8"));
 }
 
-function saveMappings(data: Record<string, string>) {
+function saveMappings(data: Record<string, string | MappingEntry>) {
   fs.writeFileSync(MAPPINGS_FILE, JSON.stringify(data, null, 2));
 }
 
@@ -129,14 +136,22 @@ const html = `<!DOCTYPE html>
   <select id="serviceSelect"><option value="">-- loading products... --</option></select>
   <label>Or enter Product ID manually</label>
   <input id="serviceId" placeholder="e.g. 1234" />
+  <label>Delivery Method</label>
+  <select id="deliveryMethod">
+    <option value="file">File</option>
+    <option value="direct">Direct</option>
+    <option value="chat">Chat</option>
+  </select>
+  <label>Column Map (JSON)</label>
+  <input id="columnMap" placeholder='{"username":"B","password":"C","email":"H","emailPassword":"I"}' />
   <button onclick="addMapping()">Save Mapping</button>
 </div>
 
 <div class="card">
   <h2>Current Mappings</h2>
   <table id="mappingsTable">
-    <thead><tr><th>Z2U Title</th><th>Product ID</th><th>Action</th></tr></thead>
-    <tbody id="mappingsBody"><tr><td colspan="3" style="color:#64748b">Loading...</td></tr></tbody>
+    <thead><tr><th>Z2U Title</th><th>Product ID</th><th>Delivery</th><th>Column Map</th><th>Action</th></tr></thead>
+    <tbody id="mappingsBody"><tr><td colspan="5" style="color:#64748b">Loading...</td></tr></tbody>
   </table>
 </div>
 
@@ -182,13 +197,15 @@ async function loadMappings() {
   const tbody = document.getElementById('mappingsBody');
   const entries = Object.entries(data);
   if (!entries.length) {
-    tbody.innerHTML = '<tr><td colspan="3" style="color:#64748b">No mappings yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="color:#64748b">No mappings yet.</td></tr>';
     return;
   }
-  tbody.innerHTML = entries.map(([title, id]) => \`
+  tbody.innerHTML = entries.map(([title, conf]) => \`
     <tr>
       <td>\${title}</td>
-      <td><span class="tag">\${id}</span></td>
+      <td><span class="tag">\${(typeof conf === "string" ? conf : conf.serviceId) || ""}</span></td>
+      <td><span class="tag">\${(typeof conf === "string" ? "file" : (conf.deliveryMethod || "file"))}</span></td>
+      <td style="max-width:260px;white-space:pre-wrap;word-break:break-word;color:#94a3b8">\${typeof conf === "string" ? '{"email":"A","password":"B"}' : JSON.stringify(conf.columnMap || { email: "A", password: "B" })}</td>
       <td><button class="danger" onclick="deleteMapping('\${encodeURIComponent(title)}')">Delete</button></td>
     </tr>
   \`).join('');
@@ -222,11 +239,25 @@ async function addMapping() {
   const title = document.getElementById('title').value.trim();
   const selVal = document.getElementById('serviceSelect').value;
   const manualId = document.getElementById('serviceId').value.trim();
+  const deliveryMethod = document.getElementById('deliveryMethod').value;
+  const columnMapText = document.getElementById('columnMap').value.trim();
   const serviceId = manualId || selVal;
   if (!title || !serviceId) { showMsg('Title and Service ID are required.', false); return; }
+  let columnMap = { email: "A", password: "B" };
+  if (columnMapText) {
+    try {
+      const parsed = JSON.parse(columnMapText);
+      if (typeof parsed !== "object" || Array.isArray(parsed) || !parsed) {
+        showMsg('Column Map must be a JSON object.', false); return;
+      }
+      columnMap = parsed;
+    } catch (e) {
+      showMsg('Invalid Column Map JSON.', false); return;
+    }
+  }
   const res = await fetch('/api/admin/mappings', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ title, serviceId })
+    body: JSON.stringify({ title, serviceId, deliveryMethod, columnMap })
   });
   if (res.ok) { showMsg('Mapping saved!', true); loadMappings(); }
   else { showMsg('Failed to save mapping.', false); }
@@ -400,13 +431,22 @@ router.get("/admin/mappings", (_req, res) => {
 });
 
 router.post("/admin/mappings", (req, res) => {
-  const { title, serviceId } = req.body as { title: string; serviceId: string };
+  const { title, serviceId, columnMap, deliveryMethod } = req.body as {
+    title: string;
+    serviceId: string;
+    columnMap?: Record<string, string>;
+    deliveryMethod?: DeliveryMethod;
+  };
   if (!title || !serviceId) {
     res.status(400).json({ error: "title and serviceId are required" });
     return;
   }
   const mappings = loadMappings();
-  mappings[title] = String(serviceId);
+  mappings[title] = {
+    serviceId: String(serviceId),
+    columnMap: columnMap && Object.keys(columnMap).length ? columnMap : { email: "A", password: "B" },
+    deliveryMethod: deliveryMethod || "file",
+  };
   saveMappings(mappings);
   res.json({ ok: true });
 });
