@@ -8,6 +8,9 @@ const router = Router();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const HEAL_CONFIG_FILE = path.resolve(__dirname, "../../heal-config.json");
+import { logger } from "../lib/logger.js";
+
+const router = Router();
 
 interface HealSelectors {
   fileInput?: string;
@@ -44,6 +47,7 @@ router.post("/heal", async (req, res) => {
 
     const conf = loadHealConfig();
     const apiKey = conf.openrouterApiKey || process.env.OPENROUTER_API_KEY;
+    const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       res.status(503).json({ error: "OPENROUTER_API_KEY is not configured" });
       return;
@@ -67,6 +71,7 @@ router.post("/heal", async (req, res) => {
       },
       body: JSON.stringify({
         model: conf.healModel || process.env.HEAL_MODEL || "google/gemini-1.5-flash",
+        model: process.env.HEAL_MODEL || "google/gemini-1.5-flash",
         temperature: 0,
         response_format: { type: "json_object" },
         messages: [
