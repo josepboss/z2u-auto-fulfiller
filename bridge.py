@@ -54,6 +54,13 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 # ── Configuration ─────────────────────────────────────────────────────────────
 CDP_URL     = "http://localhost:9222"   # Chrome remote debugging endpoint
 BRIDGE_PORT = 5000                      # Port the extension POSTs to
+VPS_API_URL = os.environ.get("VPS_API_URL", "https://z2.itspanel.com")
+DEFAULT_SELECTORS = {
+    "fileInput": "#upfile",
+    "submitButton": "#sellFormSubmit",
+    "uploadButton": "button:has-text('Upload Form')",
+    "selectFileButton": "button:has-text('Select File')",
+}
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
@@ -116,6 +123,30 @@ def _all_tab_urls(browser) -> list:
         return [p.url for ctx in browser.contexts for p in ctx.pages]
     except Exception:
         return []
+
+
+def _request_heal(page, reason: str, selectors: dict) -> dict:
+    """Send page HTML to VPS heal hook and return suggested selectors."""
+    try:
+        html = page.content()
+        payload = {
+            "reason": reason,
+            "selectors": selectors,
+            "html": html,
+        }
+        req = urllib.request.Request(
+            f"{VPS_API_URL}/api/heal",
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = _json.loads(resp.read())
+        healed = raw.get("selectors") if isinstance(raw, dict) else {}
+        return healed if isinstance(healed, dict) else {}
+    except Exception as e:
+        print(f"[bridge] heal request failed: {e}")
+        return {}
 
 
 def _get_or_open_z2u_tab(browser, page_url: str):
@@ -249,6 +280,8 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
                     ),
                 }
 
+            selectors = dict(DEFAULT_SELECTORS)
+
             print(f"[bridge] ✅ Found upload button: '{matched_text}'")
             upload_el.scroll_into_view_if_needed()
             time.sleep(0.4)
@@ -262,37 +295,49 @@ def do_upload(tmp_path: str, order_id: str, page_url: str) -> dict:
             upload_el.click()
             time.sleep(1.2)  # let the modal animate in
 
-            MODAL_SEL = ".ant-modal-content"
-
             # 1. Wait for the file input to exist in the DOM
             try:
-                print("[bridge] Locating the file input (#upfile)...")
-                page.wait_for_selector("#upfile", state="attached", timeout=5000)
+                print(f"[bridge] Locating the file input ({selectors['fileInput']})...")
+                page.wait_for_selector(selectors["fileInput"], state="attached", timeout=5000)
 
                 # 2. Attach the file directly to the input using its ID
-                page.set_input_files("#upfile", tmp_path)
-                print(f"[bridge] ✅ File attached to #upfile: {tmp_path}")
+                page.set_input_files(selectors["fileInput"], tmp_path)
+                print(f"[bridge] ✅ File attached to {selectors['fileInput']}: {tmp_path}")
 
             except Exception as e:
-                print(f"[bridge] ❌ Could not find #upfile, trying fallback click...")
-                with page.expect_file_chooser() as fc_info:
-                    page.click("button:has-text('Select File')", force=True)
-                file_chooser = fc_info.value
-                file_chooser.set_files(tmp_path)
+                print(f"[bridge] ❌ Could not find file input, trying fallback click: {e}")
+                healed = _request_heal(page, "fileInput missing", selectors)
+                selectors.update({k: v for k, v in healed.items() if isinstance(v, str) and v.strip()})
+                try:
+                    page.wait_for_selector(selectors["fileInput"], state="attached", timeout=3500)
+                    page.set_input_files(selectors["fileInput"], tmp_path)
+                    print(f"[bridge] ✅ Healed selector worked for file input: {selectors['fileInput']}")
+                except Exception:
+                    with page.expect_file_chooser() as fc_info:
+                        page.click(selectors.get("selectFileButton", "button:has-text('Select File')"), force=True)
+                    file_chooser = fc_info.value
+                    file_chooser.set_files(tmp_path)
 
             # 3. CRITICAL: The "Z2U Wait"
             print("[bridge] Waiting 5s for Z2U extension validation...")
             time.sleep(5)
 
             # 4. The Final Submit
-            print("[bridge] Clicking #sellFormSubmit...")
+            print(f"[bridge] Clicking submit ({selectors['submitButton']})...")
             try:
-                page.click("#sellFormSubmit", force=True)
+                page.click(selectors["submitButton"], force=True)
                 print("[bridge] ✅ SUBMIT clicked!")
                 return {"ok": True}
             except Exception as e:
                 print(f"[bridge] ❌ Final Submit failed: {e}")
-                return {"ok": False, "error": str(e)}
+                healed = _request_heal(page, "submitButton missing", selectors)
+                selectors.update({k: v for k, v in healed.items() if isinstance(v, str) and v.strip()})
+                try:
+                    page.click(selectors["submitButton"], force=True, timeout=4000)
+                    print(f"[bridge] ✅ Healed submit selector worked: {selectors['submitButton']}")
+                    return {"ok": True, "healed": True, "selectors": selectors}
+                except Exception as e2:
+                    return {"ok": False, "error": str(e2), "selectors": selectors}
 
         except Exception:
             tb = traceback.format_exc()

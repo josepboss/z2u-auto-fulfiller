@@ -17,6 +17,22 @@ const __dirname = path.dirname(__filename);
 const MAPPINGS_FILE = path.resolve(__dirname, "../../mappings.json");
 const LFOLLOWERS_API_URL = "https://lfollowers.com/api/v2";
 
+type DeliveryMethod = "file" | "direct" | "chat";
+
+interface MappingEntry {
+  serviceId: string;
+  columnMap?: Record<string, string>;
+  deliveryMethod?: DeliveryMethod;
+}
+
+interface ParsedAccount {
+  user: string;
+  pass: string;
+  email: string;
+  email_pass: string;
+  raw: string;
+}
+
 // ── Order cache ─────────────────────────────────────────────────────────────
 const CACHE_DIR = path.resolve(__dirname, "../../order-cache");
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -40,9 +56,24 @@ function saveCachedFile(orderId: string, buf: Buffer): void {
   logger.info({ orderId, bytes: buf.length }, "Order cache SAVED");
 }
 
-function loadMappings(): Record<string, string> {
+function loadMappings(): Record<string, string | MappingEntry> {
   if (!fs.existsSync(MAPPINGS_FILE)) return {};
   return JSON.parse(fs.readFileSync(MAPPINGS_FILE, "utf-8"));
+}
+
+function normalizeMappingEntry(v: string | MappingEntry): MappingEntry {
+  if (typeof v === "string") {
+    return {
+      serviceId: v,
+      deliveryMethod: "file",
+      columnMap: { email: "A", password: "B" },
+    };
+  }
+  return {
+    serviceId: String(v.serviceId || ""),
+    deliveryMethod: v.deliveryMethod || "file",
+    columnMap: v.columnMap && Object.keys(v.columnMap).length ? v.columnMap : { email: "A", password: "B" },
+  };
 }
 
 function getApiKey(): string {
@@ -51,10 +82,36 @@ function getApiKey(): string {
   return key;
 }
 
-// ── Direct ZIP+XML XLSX fill ─────────────────────────────────────────────────
-// Treats the .xlsx as a ZIP archive and does raw XML surgery on the worksheet.
-// Nothing outside the inserted rows is touched — styles, merges, formulas,
-// protection, and every other cell remain byte-for-byte identical to the template.
+function parseAccountLine(line: string): ParsedAccount {
+  const parts = line.split(/[|:;\/\s]+/).map((p) => p.trim()).filter(Boolean);
+  const user = parts[0] || "";
+  const pass = parts[1] || "";
+  const emailIdx = parts.findIndex((p) => p.includes("@"));
+  const email = emailIdx >= 0 ? parts[emailIdx] : (parts[2] || "");
+  const email_pass = emailIdx >= 0 ? (parts[emailIdx + 1] || parts[3] || "") : (parts[3] || "");
+  return { user, pass, email, email_pass, raw: line.trim() };
+}
+
+async function purchaseAccounts(productId: string, qty: number): Promise<ParsedAccount[]> {
+  const key = getApiKey();
+  const lfResponse = await axios.post(LFOLLOWERS_API_URL, {
+    key,
+    action: "purchase",
+    product_id: productId,
+    quantity: qty,
+  });
+
+  const purchaseResult = lfResponse.data as { delivered_data?: string; error?: string };
+  if (purchaseResult.error) {
+    throw new Error(`Lfollowers error: ${purchaseResult.error}`);
+  }
+
+  return (purchaseResult.delivered_data ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map(parseAccountLine);
+}
 
 function escapeXml(s: string): string {
   return s
@@ -65,64 +122,123 @@ function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
-function buildRowXml(rowNum: number, email: string, password: string): string {
-  const eCell = `<c r="A${rowNum}" t="inlineStr"><is><t>${escapeXml(email)}</t></is></c>`;
-  const pCell = password
-    ? `<c r="B${rowNum}" t="inlineStr"><is><t>${escapeXml(password)}</t></is></c>`
-    : "";
-  return `<row r="${rowNum}">${eCell}${pCell}</row>`;
+function normalizeFieldKey(field: string): string {
+  return field.toLowerCase().replace(/[_\s-]/g, "");
 }
 
-function fillXlsxBuffer(
-  templateBuffer: Buffer,
-  accountLines: string[],
-  qty: number
-): Buffer {
-  const zip = new AdmZip(templateBuffer);
+function valueForField(account: ParsedAccount, field: string): string {
+  const key = normalizeFieldKey(field);
+  const dict: Record<string, string> = {
+    user: account.user,
+    username: account.user,
+    login: account.user,
+    pass: account.pass,
+    password: account.pass,
+    email: account.email,
+    emailpass: account.email_pass,
+    emailpassword: account.email_pass,
+    emailpwd: account.email_pass,
+    raw: account.raw,
+  };
+  return dict[key] ?? "";
+}
 
-  // Find the first sheet XML — usually xl/worksheets/sheet1.xml
+function buildRowXml(rowNum: number, account: ParsedAccount, columnMap: Record<string, string>): string {
+  const cells = Object.entries(columnMap)
+    .map(([field, col]) => ({ field, col: String(col || "").toUpperCase().trim() }))
+    .filter((x) => /^[A-Z]+$/.test(x.col))
+    .map(({ field, col }) => {
+      const value = valueForField(account, field);
+      if (!value) return "";
+      return `<c r="${col}${rowNum}" t="inlineStr"><is><t>${escapeXml(value)}</t></is></c>`;
+    })
+    .filter(Boolean)
+    .join("");
+
+  return `<row r="${rowNum}">${cells}</row>`;
+}
+
+function fillXlsxBuffer(templateBuffer: Buffer, accounts: ParsedAccount[], qty: number, columnMap: Record<string, string>): Buffer {
+  const zip = new AdmZip(templateBuffer);
   const entries: string[] = zip.getEntries().map((e: { entryName: string }) => e.entryName);
   const sheetEntry = entries.find((n) => /xl\/worksheets\/sheet\d+\.xml/.test(n));
   if (!sheetEntry) throw new Error("Could not find worksheet XML in xlsx");
 
   let wsXml: string = zip.readAsText(sheetEntry);
-
-  // Remove any existing rows at row 4 and above (template data rows, usually empty)
-  // This prevents duplicate rows while keeping all header rows intact.
   wsXml = wsXml.replace(/<row\s[^>]*\br="(\d+)"[^>]*>[\s\S]*?<\/row>/g, (match, rNum) =>
-    parseInt(rNum, 10) >= 4 ? "" : match
+    parseInt(rNum, 10) >= 4 ? "" : match,
   );
-
-  // Handle self-closing <sheetData/> edge case
   wsXml = wsXml.replace(/<sheetData\s*\/>/, "<sheetData></sheetData>");
 
-  // Build and insert the data rows
-  const newRows = accountLines
+  const newRows = accounts
     .slice(0, qty)
-    .map((line, i) => {
-      const [email = line, password = ""] = line.split("|");
-      return buildRowXml(4 + i, email.trim(), password.trim());
-    })
+    .map((a, i) => buildRowXml(4 + i, a, columnMap))
     .join("");
 
   wsXml = wsXml.replace("</sheetData>", newRows + "</sheetData>");
-
   zip.updateFile(sheetEntry, Buffer.from(wsXml, "utf8"));
   return zip.toBuffer() as Buffer;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+function formatCredentials(accounts: ParsedAccount[]): string {
+  return accounts
+    .map((a, idx) => {
+      const chunks = [
+        a.user ? `user: ${a.user}` : "",
+        a.pass ? `pass: ${a.pass}` : "",
+        a.email ? `email: ${a.email}` : "",
+        a.email_pass ? `email_pass: ${a.email_pass}` : "",
+      ].filter(Boolean);
+      return `${idx + 1}) ${chunks.join(" | ")}`;
+    })
+    .join("\n");
+}
 
 const upload = multer({ storage: multer.memoryStorage() });
 const router = Router();
 
+router.post("/prepare-order", async (req, res) => {
+  try {
+    const { title, quantity, orderId } = req.body as { title: string; quantity: number | string; orderId?: string };
+    if (!title || !quantity) {
+      res.status(400).json({ error: "title and quantity are required" });
+      return;
+    }
+
+    const qty = parseInt(String(quantity), 10);
+    const mappings = loadMappings();
+    const rawMapping = mappings[title];
+    if (!rawMapping) {
+      res.status(404).json({ error: `No mapping found for title: \"${title}\"` });
+      return;
+    }
+
+    const mapping = normalizeMappingEntry(rawMapping);
+    if (!mapping.serviceId) {
+      res.status(400).json({ error: `Invalid mapping config for title: \"${title}\"` });
+      return;
+    }
+
+    const accounts = await purchaseAccounts(mapping.serviceId, qty);
+    res.json({
+      ok: true,
+      orderId: orderId || "",
+      title,
+      productId: mapping.serviceId,
+      deliveryMethod: mapping.deliveryMethod || "file",
+      columnMap: mapping.columnMap || { email: "A", password: "B" },
+      accounts,
+      formattedCredentials: formatCredentials(accounts),
+    });
+  } catch (err) {
+    logger.error({ err }, "prepare-order failed");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 router.post("/process-order", upload.single("file"), async (req, res) => {
   try {
-    const { title, quantity, orderId } = req.body as {
-      title: string;
-      quantity: string;
-      orderId?: string;
-    };
+    const { title, quantity, orderId } = req.body as { title: string; quantity: string; orderId?: string };
 
     if (!title || !quantity) {
       res.status(400).json({ error: "title and quantity are required" });
@@ -137,7 +253,27 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
       return;
     }
 
-    // ── Cache check ──────────────────────────────────────────────────────────
+    const qty = parseInt(quantity, 10);
+    const mappings = loadMappings();
+    const rawMapping = mappings[title];
+    if (!rawMapping) {
+      res.status(404).json({ error: `No mapping found for title: \"${title}\"` });
+      return;
+    }
+    const mapping = normalizeMappingEntry(rawMapping);
+
+    if ((mapping.deliveryMethod || "file") !== "file") {
+      const accounts = await purchaseAccounts(mapping.serviceId, qty);
+      res.json({
+        ok: true,
+        deliveryMethod: mapping.deliveryMethod,
+        columnMap: mapping.columnMap,
+        accounts,
+        formattedCredentials: formatCredentials(accounts),
+      });
+      return;
+    }
+
     const cached = getCachedFile(orderId);
     if (cached) {
       const outputFilename = req.file.originalname || `${orderId}.xlsx`;
@@ -147,59 +283,23 @@ router.post("/process-order", upload.single("file"), async (req, res) => {
       return;
     }
 
-    // ── Call Lfollowers API ──────────────────────────────────────────────────
-    const mappings = loadMappings();
-    const productId = mappings[title];
-    if (!productId) {
-      res.status(404).json({ error: `No mapping found for title: "${title}"` });
-      return;
-    }
+    logger.info({ title, productId: mapping.serviceId, quantity: qty, orderId }, "Purchasing from Lfollowers");
+    const accounts = await purchaseAccounts(mapping.serviceId, qty);
+    const columnMap = mapping.columnMap || { email: "A", password: "B" };
 
-    const qty = parseInt(quantity, 10);
-    logger.info({ title, productId, quantity: qty, orderId }, "Purchasing from Lfollowers");
-
-    const key = getApiKey();
-    const lfResponse = await axios.post(LFOLLOWERS_API_URL, {
-      key,
-      action: "purchase",
-      product_id: productId,
-      quantity: qty,
-    });
-
-    const purchaseResult = lfResponse.data as {
-      delivered_data?: string;
-      error?: string;
-    };
-
-    if (purchaseResult.error) {
-      logger.error({ error: purchaseResult.error }, "Lfollowers purchase error");
-      res.status(502).json({ error: `Lfollowers error: ${purchaseResult.error}` });
-      return;
-    }
-
-    const accountLines = (purchaseResult.delivered_data ?? "")
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-
-    // ── Fill XLSX via direct ZIP+XML (zero format changes) ───────────────────
-    logger.info({ qty, accounts: accountLines.length }, "Filling template via ZIP+XML surgery");
-    const outputBuffer = fillXlsxBuffer(req.file.buffer, accountLines, qty);
-
+    logger.info({ qty, accounts: accounts.length, columnMap }, "Filling template via ZIP+XML surgery");
+    const outputBuffer = fillXlsxBuffer(req.file.buffer, accounts, qty, columnMap);
     saveCachedFile(orderId, outputBuffer);
 
     const outputFilename = req.file.originalname || `${orderId}.xlsx`;
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${outputFilename}"`);
     res.send(outputBuffer);
-
   } catch (err) {
     logger.error({ err }, "process-order failed");
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
-// ── Cache management ─────────────────────────────────────────────────────────
 
 router.get("/order-cache", (_req, res) => {
   const files = fs.existsSync(CACHE_DIR) ? fs.readdirSync(CACHE_DIR) : [];
