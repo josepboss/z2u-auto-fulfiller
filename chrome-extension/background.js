@@ -398,6 +398,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "PREPARE_ORDER") {
+    handleOrderPreparation(message.data)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
   if (message.type === "GET_MAPPINGS") {
     fetchMappings()
       .then((mappings) => sendResponse({ ok: true, mappings }))
@@ -659,4 +666,23 @@ async function handleOrderProcessing(orderData) {
   // NOTE: Do NOT mark as processed here — content.js does that ONLY after
   // the filled file is successfully uploaded and Z2U confirms delivery.
   return { filledFile: Array.from(new Uint8Array(arrayBuffer)) };
+}
+
+async function handleOrderPreparation(orderData) {
+  const { orderId, title, quantity } = orderData;
+  console.log(`[Z2U] Preparing order payload for ${orderId} (${title}) qty=${quantity}`);
+
+  const { serverUrl } = await chrome.storage.local.get("serverUrl");
+  const base = serverUrl || CONFIG.SERVER_URL;
+
+  const res = await fetch(`${base}/api/prepare-order`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ orderId, title, quantity }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Prepare-order failed: ${res.status} — ${text}`);
+  }
+  return await res.json();
 }
